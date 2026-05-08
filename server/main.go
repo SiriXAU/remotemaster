@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -46,6 +47,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/launch.ps1", launchScriptHandler)
 	mux.HandleFunc("/ws/client", clientHandler)
 	mux.HandleFunc("/ws/agent", agentHandler)
 
@@ -53,6 +55,35 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// launchScriptHandler serves a PowerShell script that downloads the latest
+// client EXE from GitHub Releases, writes the server URL to server.txt, and
+// launches the executable. Run it on Windows with: irm <url>/launch.ps1 | iex
+func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
+	scheme := "ws"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "wss"
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	serverURL := scheme + "://" + host
+
+	const ps1 = `$ErrorActionPreference = 'Stop'
+$dir = Join-Path $env:LOCALAPPDATA 'RemoteMaster'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$exe = Join-Path $dir 'remotemaster-client.exe'
+Write-Host 'Downloading RemoteMaster client...'
+Invoke-WebRequest -Uri 'https://github.com/sirixau/remotemaster/releases/download/latest/remotemaster-client.exe' -OutFile $exe -UseBasicParsing
+'%s' | Set-Content -Path (Join-Path $dir 'server.txt') -NoNewline -Encoding UTF8
+Write-Host 'Starting RemoteMaster...'
+Start-Process -FilePath $exe -WorkingDirectory $dir
+`
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=launch.ps1")
+	fmt.Fprintf(w, ps1, serverURL)
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
