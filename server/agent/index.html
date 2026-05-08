@@ -12,8 +12,11 @@
     color: #e2e8f0;
     min-height: 100vh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 16px;
+    padding: 40px 16px;
   }
   .card {
     background: #1a1d27;
@@ -102,6 +105,89 @@
     display: none;
   }
   .error.show { display: block; }
+
+  /* Download card */
+  .download-card {
+    padding: 28px 32px;
+    text-align: left;
+  }
+  .download-card h2 {
+    font-size: 14px;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 4px;
+  }
+  .download-card .sub {
+    font-size: 12px;
+    color: #64748b;
+    margin-bottom: 18px;
+  }
+  .cmd-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 6px;
+  }
+  .cmd-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .cmd-box {
+    flex: 1;
+    background: #0f1117;
+    border: 1px solid #2d3348;
+    border-radius: 6px;
+    padding: 9px 12px;
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 12px;
+    color: #a5b4fc;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .copy-btn {
+    width: auto;
+    padding: 8px 14px;
+    font-size: 12px;
+    background: #2d3348;
+    flex-shrink: 0;
+  }
+  .copy-btn:hover { background: #3a4057; }
+  .copy-btn.copied { background: #166534; }
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #2d3348;
+  }
+  .divider span { font-size: 11px; color: #4a5568; }
+  .dl-btn {
+    background: transparent;
+    border: 1px solid #2d3348;
+    color: #94a3b8;
+    font-size: 13px;
+    padding: 10px;
+  }
+  .dl-btn:hover { background: #1e2235; border-color: #6366f1; color: #f1f5f9; }
+  .manual-note {
+    margin-top: 12px;
+    font-size: 11px;
+    color: #4a5568;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .manual-note a { color: #6366f1; text-decoration: none; }
+  .manual-note a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -123,6 +209,26 @@
   </form>
   <div class="error" id="errMsg"></div>
 </div>
+
+<div class="card download-card">
+  <h2>Run the Client Software</h2>
+  <p class="sub">On the Windows machine to be controlled, open PowerShell and run:</p>
+  <div class="cmd-label">One-line install &amp; launch</div>
+  <div class="cmd-row">
+    <div class="cmd-box" id="psCmd"></div>
+    <button class="copy-btn" id="copyBtn" type="button">Copy</button>
+  </div>
+  <div class="divider"><span>or</span></div>
+  <a id="dlLink" href="/launch.ps1" download="launch.ps1">
+    <button class="dl-btn" type="button">Download launch.ps1</button>
+  </a>
+  <p class="manual-note">
+    Prefer a direct download?
+    <a href="https://github.com/sirixau/remotemaster/releases/latest/download/remotemaster-client.exe">remotemaster-client.exe</a>
+    — place <code>server.txt</code> containing your server URL next to it.
+  </p>
+</div>
+
 <script>
 const inputs = Array.from(document.querySelectorAll('.code-input input'));
 const btn = document.getElementById('connectBtn');
@@ -163,6 +269,25 @@ document.getElementById('form').addEventListener('submit', e => {
   errMsg.classList.remove('show');
   window.location.href = `/viewer.html?code=${code}`;
 });
+
+// Build the PowerShell one-liner using the current page's origin.
+(function() {
+  const origin = window.location.origin;
+  const cmd = `irm ${origin}/launch.ps1 | iex`;
+  document.getElementById('psCmd').textContent = cmd;
+
+  const copyBtn = document.getElementById('copyBtn');
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(cmd).then(() => {
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy';
+        copyBtn.classList.remove('copied');
+      }, 2000);
+    });
+  });
+})();
 </script>
 </body>
 </html>

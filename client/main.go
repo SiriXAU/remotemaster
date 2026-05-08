@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/sirixau/remotemaster/client/capture"
@@ -15,13 +17,35 @@ import (
 	"github.com/sirixau/remotemaster/client/ui"
 )
 
-// RelayServer is the relay server URL, injected at build time with:
+// RelayServer is the compiled-in default, overridable at build time with:
 //
 //	-ldflags "-X main.RelayServer=wss://yourdomain.com"
 var RelayServer = "ws://localhost:8080"
 
+// resolveServerURL returns the relay server URL from the first matching source:
+//  1. First command-line argument (if it starts with "ws")
+//  2. server.txt file in the same directory as the executable
+//  3. Compiled-in RelayServer
+func resolveServerURL() string {
+	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "ws") {
+		return os.Args[1]
+	}
+	if exe, err := os.Executable(); err == nil {
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "server.txt"))
+		if err == nil {
+			if url := strings.TrimSpace(string(data)); url != "" {
+				return url
+			}
+		}
+	}
+	return RelayServer
+}
+
 func main() {
 	log.SetFlags(log.Ltime)
+
+	serverURL := resolveServerURL()
+	log.Printf("relay server: %s", serverURL)
 
 	cap, err := capture.New()
 	if err != nil {
@@ -45,7 +69,7 @@ func main() {
 	}()
 
 	client := relay.New(
-		RelayServer,
+		serverURL,
 		cap,
 		inj,
 		func(code string) {
