@@ -1,0 +1,28 @@
+services:
+  remotemaster:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: remotemaster:latest
+    container_name: remotemaster
+    restart: unless-stopped
+    environment:
+      - SERVER_ADDR=:8080
+    ports:
+      - "8080:8080"
+    # Uncomment to use nginx TLS termination instead of exposing 8080 directly:
+    # ports: []
+
+  # Optional: nginx reverse proxy with TLS.
+  # Place your cert at deploy/certs/cert.pem and key at deploy/certs/key.pem.
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: remotemaster-nginx
+  #   restart: unless-stopped
+  #   depends_on: [remotemaster]
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./certs:/etc/nginx/certs:ro
