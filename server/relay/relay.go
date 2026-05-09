@@ -10,11 +10,20 @@ import (
 	"github.com/sirixau/remotemaster/server/session"
 )
 
+// maxMessageBytes is the per-message read limit applied to both sides of the
+// relay. The default nhooyr.io/websocket limit is 32 KiB, which is too small
+// for a single JPEG frame. 10 MiB is enough headroom for a 4K screen at the
+// chosen JPEG quality.
+const maxMessageBytes = 10 * 1024 * 1024
+
 // Bridge pumps messages bidirectionally between a session's client and agent.
 // It blocks until one side closes, then closes both connections.
 // onDone is called when the bridge shuts down.
 func Bridge(ctx context.Context, sess *session.Session, onDone func()) {
 	defer onDone()
+
+	sess.ClientConn.SetReadLimit(maxMessageBytes)
+	sess.AgentConn.SetReadLimit(maxMessageBytes)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
