@@ -61,12 +61,18 @@
         ws.send(JSON.stringify(obj));
       }
     },
+    sendBinary: (buf) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(buf);
+      }
+    },
   };
 
   function connect() {
     if (dead) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}`);
+    ws.binaryType = 'arraybuffer';
     setStatus('waiting', 'Connecting…');
     showOverlay('Connecting to session…');
 
@@ -76,6 +82,38 @@
     };
 
     ws.onmessage = (e) => {
+      // Binary message: frame data (type 0x01)
+      if (e.data instanceof ArrayBuffer) {
+        const dv = new DataView(e.data);
+        if (dv.getUint8(0) !== 0x01) return;
+        const w = dv.getUint32(1);
+        const h = dv.getUint32(5);
+        if (w !== remoteW || h !== remoteH) {
+          remoteW = w;
+          remoteH = h;
+          canvas.width = remoteW;
+          canvas.height = remoteH;
+          scaleCanvas();
+        }
+        const webpData = new Uint8Array(e.data, 9);
+        const blob = new Blob([webpData], { type: 'image/webp' });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0);
+          URL.revokeObjectURL(url);
+          setStatus('connected', 'Connected');
+          hideOverlay();
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          setStatus('error', 'Frame decode error');
+        };
+        img.src = url;
+        return;
+      }
+
+      // Text message: JSON control
       let m;
       try { m = JSON.parse(e.data); } catch { return; }
 
@@ -88,25 +126,6 @@
           dead = true;
           setStatus('error', m.msg || 'Error');
           showOverlay(m.msg || 'Session error');
-          break;
-
-        case 'frame':
-          if (m.w && m.h && (m.w !== remoteW || m.h !== remoteH)) {
-            remoteW = m.w;
-            remoteH = m.h;
-            canvas.width = remoteW;
-            canvas.height = remoteH;
-            scaleCanvas();
-          }
-          if (m.data) {
-            const img = new Image();
-            img.onload = () => {
-              ctx.drawImage(img, 0, 0);
-              setStatus('connected', 'Connected');
-              hideOverlay();
-            };
-            img.src = 'data:image/jpeg;base64,' + m.data;
-          }
           break;
 
         case 'agent_disconnected':

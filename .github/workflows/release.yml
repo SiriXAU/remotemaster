@@ -20,13 +20,16 @@ jobs:
           go-version-file: go.work
           cache: true
 
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
       - name: Build Windows client EXE
         run: |
           mkdir -p dist
           cd client
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+          CC=x86_64-w64-mingw32-gcc CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
             go build \
-            -ldflags="-H windowsgui -s -w" \
+            -ldflags="-H windowsgui -s -w -extldflags=-static" \
             -o ../dist/remotemaster-client.exe \
             .
 

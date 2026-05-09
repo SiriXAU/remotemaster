@@ -105,12 +105,6 @@ func clientHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Disable the per-message read limit immediately after accept so that
-	// large JPEG frames (often >32 KiB) are not rejected before the relay
-	// bridge has a chance to configure the connection.  nhooyr.io/websocket
-	// defaults to 32 KiB; its own NetConn helper uses the same pattern.
-	conn.SetReadLimit(-1)
-
 	sess, err := store.Create(conn)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "server error")

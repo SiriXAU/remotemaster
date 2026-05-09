@@ -1,19 +1,18 @@
 package relay
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/jpeg"
+	"hash/fnv"
+	"image"
 	"log"
 	"time"
 
 	"nhooyr.io/websocket"
 
+	"github.com/chai2010/webp"
 	"github.com/sirixau/remotemaster/client/capture"
 	"github.com/sirixau/remotemaster/client/input"
 )
@@ -31,24 +30,11 @@ const (
 	dialTimeout  = 10 * time.Second
 )
 
-// wireMsg covers all message types in both directions.
-type wireMsg struct {
+// ctrlMsg is the JSON control message struct used during session setup.
+type ctrlMsg struct {
 	Type string `json:"type"`
-	// Server → client control
 	Code string `json:"code,omitempty"`
 	Msg  string `json:"msg,omitempty"`
-	// Client → server (frame)
-	W    int    `json:"w,omitempty"`
-	H    int    `json:"h,omitempty"`
-	Data string `json:"data,omitempty"`
-	// Agent → client (input events, forwarded raw by relay)
-	X   int    `json:"x,omitempty"`
-	Y   int    `json:"y,omitempty"`
-	Btn string `json:"btn,omitempty"`
-	Dx  int    `json:"dx,omitempty"`
-	Dy  int    `json:"dy,omitempty"`
-	VK  int    `json:"vk,omitempty"`
-	Key string `json:"key,omitempty"`
 }
 
 // Client manages the WebSocket relay connection and drives the capture loop.
@@ -122,7 +108,7 @@ func (c *Client) connect(ctx context.Context) error {
 	defer conn.CloseNow()
 
 	// Wait for the "registered" message to get our session code.
-	var reg wireMsg
+	var reg ctrlMsg
 	if err := readJSON(ctx, conn, &reg); err != nil {
 		return dialErr{fmt.Errorf("waiting for registration: %w", err)}
 	}
@@ -136,15 +122,11 @@ func (c *Client) connect(ctx context.Context) error {
 
 	// Wait for "agent_connected" before starting the capture loop.
 	agentCh := make(chan struct{}, 1)
-	inputCh := make(chan wireMsg, 64)
+	inputCh := make(chan input.Event, 64)
 
-	// Read pump — handles all inbound messages.
 	go c.readPump(ctx, conn, agentCh, inputCh)
-
-	// Input injection — drain inputCh and inject events.
 	go c.injectLoop(ctx, inputCh)
 
-	// Wait for agent.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -158,11 +140,28 @@ func (c *Client) connect(ctx context.Context) error {
 	return c.captureLoop(ctx, conn)
 }
 
-func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan struct{}, inputCh chan wireMsg) {
+// readPump handles both JSON control messages and binary input events.
+func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan struct{}, inputCh chan input.Event) {
 	for {
-		var m wireMsg
-		if err := readJSON(ctx, conn, &m); err != nil {
+		mt, b, err := conn.Read(ctx)
+		if err != nil {
 			return
+		}
+		if mt == websocket.MessageBinary {
+			ev, ok := decodeEvent(b)
+			if !ok {
+				continue
+			}
+			select {
+			case inputCh <- ev:
+			default:
+			}
+			continue
+		}
+		// JSON control message
+		var m ctrlMsg
+		if err := json.Unmarshal(b, &m); err != nil {
+			continue
 		}
 		switch m.Type {
 		case "agent_connected":
@@ -174,35 +173,18 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 			if c.onDisconn != nil {
 				c.onDisconn()
 			}
-		default:
-			// Treat unknown messages as potential input events.
-			select {
-			case inputCh <- m:
-			default:
-				// Drop if channel is full (shouldn't happen at 15fps)
-			}
 		}
 	}
 }
 
-func (c *Client) injectLoop(ctx context.Context, ch chan wireMsg) {
+func (c *Client) injectLoop(ctx context.Context, ch chan input.Event) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case m := <-ch:
+		case ev := <-ch:
 			if c.inj == nil {
 				continue
-			}
-			ev := input.Event{
-				Type: m.Type,
-				X:    m.X,
-				Y:    m.Y,
-				Btn:  m.Btn,
-				Dx:   m.Dx,
-				Dy:   m.Dy,
-				VK:   m.VK,
-				Key:  m.Key,
 			}
 			if err := c.inj.Inject(ev); err != nil {
 				log.Printf("inject %s: %v", ev.Type, err)
@@ -216,7 +198,8 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	defer ticker.Stop()
 
 	w, h := c.cap.Bounds()
-	var lastHash [16]byte
+	frameHasher := fnv.New64a()
+	var lastHash uint64
 
 	for {
 		select {
@@ -231,27 +214,33 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 
-		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: frameQuality}); err != nil {
-			log.Printf("jpeg encode: %v", err)
+		nrgba, ok := img.(*image.NRGBA)
+		if !ok {
+			log.Printf("capture: unexpected image type %T", img)
 			continue
 		}
 
-		// Skip unchanged frames.
-		hash := md5.Sum(buf.Bytes())
-		if hash == lastHash {
+		// Fast pixel-sampling hash: sample every 32nd pixel before encoding.
+		// This is ~10x cheaper than MD5 on the full encoded output.
+		frameHasher.Reset()
+		pix := nrgba.Pix
+		for i := 0; i+4 <= len(pix); i += 128 {
+			frameHasher.Write(pix[i : i+4])
+		}
+		if h := frameHasher.Sum64(); h == lastHash {
+			continue
+		} else {
+			lastHash = h
+		}
+
+		data, err := webp.EncodeRGBA(img, float32(frameQuality))
+		if err != nil || len(data) == 0 {
+			log.Printf("webp encode: %v", err)
 			continue
 		}
-		lastHash = hash
 
-		m := wireMsg{
-			Type: "frame",
-			W:    w,
-			H:    h,
-			Data: base64.StdEncoding.EncodeToString(buf.Bytes()),
-		}
-		b, _ := json.Marshal(m)
-		if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+		frame := encodeFrame(w, h, data)
+		if err := conn.Write(ctx, websocket.MessageBinary, frame); err != nil {
 			return fmt.Errorf("write frame: %w", err)
 		}
 	}

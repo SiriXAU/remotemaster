@@ -131,13 +131,14 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 		return nil, fmt.Errorf("GetDIBits failed")
 	}
 
-	// GDI returns BGRA; convert to RGBA for image.NRGBA
+	// GDI returns BGRA; convert to RGBA for image.NRGBA using 32-bit swaps.
+	// Each iteration handles one pixel via uint32 bit manipulation instead of
+	// four byte operations, roughly halving memory traffic.
 	img := image.NewNRGBA(image.Rect(0, 0, c.w, c.h))
 	for i := 0; i < len(pixels); i += 4 {
-		img.Pix[i+0] = pixels[i+2] // R
-		img.Pix[i+1] = pixels[i+1] // G
-		img.Pix[i+2] = pixels[i+0] // B
-		img.Pix[i+3] = 0xFF        // A
+		bgra := *(*uint32)(unsafe.Pointer(&pixels[i]))
+		rgba := (bgra&0xFF00FF00) | ((bgra & 0xFF) << 16) | ((bgra >> 16) & 0xFF) | 0xFF000000
+		*(*uint32)(unsafe.Pointer(&img.Pix[i])) = rgba
 	}
 	return img, nil
 }

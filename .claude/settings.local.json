@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go get *)",
+      "PowerShell($url = \"https://go.dev/dl/go1.25.0.windows-amd64.msi\"; $msi = \"$env:TEMP\\\\go-installer.msi\"; Write-Host \"Downloading Go...\"; Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing; Write-Host \"Installing Go...\"; Start-Process msiexec.exe -ArgumentList \"/i `\"$msi`\" /quiet /norestart\" -Wait -NoNewWindow; Write-Host \"Done\"; Remove-Item $msi -Force)",
+      "PowerShell($env:PATH = [Environment]::GetEnvironmentVariable\\(\"PATH\", \"Machine\"\\) + \";\" + [Environment]::GetEnvironmentVariable\\(\"PATH\", \"User\"\\); go version)",
+      "PowerShell($latest = Invoke-RestMethod -Uri \"https://go.dev/dl/?mode=json\" -UseBasicParsing | Select-Object -First 1; $latest | ForEach-Object { $_.version + \" - \" + $_.stable })",
+      "PowerShell($url = \"https://go.dev/dl/go1.25.10.windows-amd64.msi\"; $msi = \"$env:TEMP\\\\go-installer.msi\"; Write-Host \"Downloading Go 1.25.10...\"; Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing; $size = \\(Get-Item $msi\\).Length; Write-Host \"Downloaded $size bytes\"; Write-Host \"Installing...\"; Start-Process msiexec.exe -ArgumentList \"/i `\"$msi`\" /quiet /norestart\" -Wait; Write-Host \"Install complete\"; Remove-Item $msi -Force)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Go\\\\bin\\\\go.exe\" version)",
+      "PowerShell($url = \"https://go.dev/dl/go1.25.10.windows-amd64.zip\"; $zip = \"$env:TEMP\\\\go.zip\"; $dest = \"$env:USERPROFILE\\\\go-sdk\"; Write-Host \"Downloading Go ZIP...\"; Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing; Write-Host \"Extracting to $dest...\"; if \\(Test-Path $dest\\) { Remove-Item $dest -Recurse -Force }; Expand-Archive -Path $zip -DestinationPath $dest -Force; Remove-Item $zip; Write-Host \"Go installed\"; & \"$dest\\\\Go\\\\bin\\\\go.exe\" version)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go mod tidy 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go list -m -versions github.com/chai2010/webp 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go get github.com/chai2010/webp@latest 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go doc github.com/chai2010/webp 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\"; go work sync 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\server\"; go build -ldflags=\"-s -w\" -o ../dist/remotemaster-server.exe . 2>&1)",
+      "PowerShell(Get-Item \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\dist\\\\remotemaster-server.exe\" | Select Name, @{N='SizeKB';E={[math]::Round\\($_.Length/1KB,1\\)}})",
+      "PowerShell(Get-Command gcc -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command gcc.exe -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command clang -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command \"x86_64-w64-mingw32-gcc\" -ErrorAction SilentlyContinue)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; CGO_ENABLED=1 go build -ldflags=\"-H windowsgui -s -w\" -o ../dist/remotemaster-client.exe . 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; $env:CGO_ENABLED = 1; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go build -ldflags=\"-H windowsgui -s -w\" -o ../dist/remotemaster-client.exe . 2>&1)",
+      "PowerShell(Get-Command choco -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Command scoop -ErrorAction SilentlyContinue)",
+      "PowerShell(choco install mingw -y 2>&1)",
+      "PowerShell($url = \"https://github.com/niXman/mingw-builds-binaries/releases/download/14.2.0-rt_v12-rev0/x86_64-14.2.0-release-win32-seh-ucrt-rt_v12-rev0.7z\"; Write-Host \"Downloading MinGW...\"; $archive = \"$env:TEMP\\\\mingw.7z\"; Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing; $dest = \"$env:USERPROFILE\\\\mingw64\"; Write-Host \"Extracting to $dest...\"; if \\(Test-Path $dest\\) { Remove-Item $dest -Recurse -Force }; & \"C:\\\\Program Files\\\\7-Zip\\\\7z.exe\" x $archive \"-o$dest\" -y 2>&1 | Select-Object -Last 3; Remove-Item $archive; Write-Host \"Done\")",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\mingw64\" -Directory -Depth 1 | Select Name; Get-ChildItem \"$env:USERPROFILE\\\\mingw64\\\\bin\\\\gcc.exe\" -ErrorAction SilentlyContinue | Select FullName)",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\mingw64\" -Depth 0 2>$null; Get-ChildItem \"$env:USERPROFILE\\\\mingw64\" -Recurse -Filter \"gcc.exe\" -Depth 3 -ErrorAction SilentlyContinue | Select -First 3 FullName)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;C:\\\\Users\\\\colbe\\\\mingw64\\\\mingw64\\\\bin;\" + $env:PATH; $env:CGO_ENABLED = 1; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go build -ldflags=\"-H windowsgui -s -w\" -o ../dist/remotemaster-client.exe . 2>&1)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\dist\" | Select Name, @{N='SizeMB';E={[math]::Round\\($_.Length/1MB,2\\)}}, LastWriteTime)",
+      "PowerShell(Test-Path C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\go.work.sum; if \\(Test-Path C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\go.work.sum\\) { \\(Get-Item C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\go.work.sum\\).Length })",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;C:\\\\Users\\\\colbe\\\\mingw64\\\\mingw64\\\\bin;\" + $env:PATH; $env:CGO_ENABLED = 1; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\client\"; go vet ./... 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\colbe\\\\go-sdk\\\\Go\\\\bin;\" + $env:PATH; Set-Location \"C:\\\\Users\\\\colbe\\\\Documents\\\\remotemaster\\\\server\"; go vet ./... 2>&1)"
+    ]
+  }
+}
