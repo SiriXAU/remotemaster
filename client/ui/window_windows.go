@@ -200,8 +200,15 @@ func onPaint(hwnd uintptr) uintptr {
 	code := globalCode
 	mu.Unlock()
 
-	display := "------"
-	if code != "" {
+	var display string
+	switch code {
+	case "":
+		display = "· · · · · ·" // connecting, waiting for server
+	case "------":
+		display = "------" // disconnected / session ended
+	case "NOCONN":
+		display = "NO CONN" // dial error — wrong URL or server down
+	default:
 		display = code[:3] + " " + code[3:]
 	}
 	codeRect := rect{rc.Left, rc.Top + 58, rc.Right, rc.Top + 125}
@@ -216,7 +223,16 @@ func onPaint(hwnd uintptr) uintptr {
 	procSelectObject.Call(hdc, hintFont)
 	procSetTextColor.Call(hdc, labelColor)
 	hintRect := rect{rc.Left + 16, rc.Top + 126, rc.Right - 16, rc.Top + 145}
-	drawTextW(hdc, "Provide this code to your support agent", &hintRect, dtNoClip)
+	var hintText string
+	switch code {
+	case "NOCONN":
+		hintText = "Cannot reach server — check URL scheme (ws:// vs wss://)"
+	case "":
+		hintText = "Connecting to server..."
+	default:
+		hintText = "Provide this code to your support agent"
+	}
+	drawTextW(hdc, hintText, &hintRect, dtNoClip)
 	procDeleteObject.Call(hintFont)
 
 	return 0

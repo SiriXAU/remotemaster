@@ -83,6 +83,9 @@ func main() {
 			ui.SetCode("------")
 		},
 	)
+	client.OnConnFail = func() {
+		ui.SetCode("NOCONN")
+	}
 
 	// Connect to relay in the background.
 	go client.Run(ctx)

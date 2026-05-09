@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/jpeg"
 	"log"
@@ -16,6 +17,13 @@ import (
 	"github.com/sirixau/remotemaster/client/capture"
 	"github.com/sirixau/remotemaster/client/input"
 )
+
+// dialErr wraps errors that occur before a session code is received,
+// so callers can distinguish "never connected" from "disconnected".
+type dialErr struct{ err error }
+
+func (e dialErr) Error() string { return "dial: " + e.err.Error() }
+func (e dialErr) Unwrap() error { return e.err }
 
 const (
 	frameQuality = 65
@@ -45,12 +53,15 @@ type wireMsg struct {
 
 // Client manages the WebSocket relay connection and drives the capture loop.
 type Client struct {
-	serverURL string
-	cap       capture.Capturer
-	inj       input.Injector
-	onCode    func(code string)
-	onConnect func()
-	onDisconn func()
+	serverURL  string
+	cap        capture.Capturer
+	inj        input.Injector
+	onCode     func(code string)
+	onConnect  func()
+	onDisconn  func()
+	// OnConnFail is called when the server cannot be reached at all (dial error),
+	// as opposed to onDisconn which fires after a working session drops.
+	OnConnFail func()
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -74,9 +85,17 @@ func (c *Client) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("relay: disconnected (%v), retrying in %s", err, delay)
-			if c.onDisconn != nil {
-				c.onDisconn()
+			var de dialErr
+			if errors.As(err, &de) {
+				log.Printf("relay: cannot reach server at %s (%v) — retrying in %s (check scheme: ws vs wss)", c.serverURL, de.err, delay)
+				if c.OnConnFail != nil {
+					c.OnConnFail()
+				}
+			} else {
+				log.Printf("relay: disconnected (%v), retrying in %s", err, delay)
+				if c.onDisconn != nil {
+					c.onDisconn()
+				}
 			}
 			select {
 			case <-ctx.Done():
@@ -98,17 +117,17 @@ func (c *Client) connect(ctx context.Context) error {
 
 	conn, _, err := websocket.Dial(dialCtx, c.serverURL+"/ws/client", nil)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return dialErr{fmt.Errorf("connect to %s: %w", c.serverURL, err)}
 	}
 	defer conn.CloseNow()
 
 	// Wait for the "registered" message to get our session code.
 	var reg wireMsg
 	if err := readJSON(ctx, conn, &reg); err != nil {
-		return fmt.Errorf("read registered: %w", err)
+		return dialErr{fmt.Errorf("waiting for registration: %w", err)}
 	}
 	if reg.Type != "registered" {
-		return fmt.Errorf("expected 'registered', got %q", reg.Type)
+		return dialErr{fmt.Errorf("expected 'registered', got %q", reg.Type)}
 	}
 	if c.onCode != nil {
 		c.onCode(reg.Code)
