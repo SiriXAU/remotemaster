@@ -72,6 +72,7 @@ func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	serverURL := scheme + "://" + host
 
 	const ps1 = `$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $dir = Join-Path $env:LOCALAPPDATA 'RemoteMaster'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir 'remotemaster-client.exe'
