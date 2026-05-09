@@ -57,9 +57,9 @@ func main() {
 	}
 }
 
-// launchScriptHandler serves a PowerShell script that downloads the latest
-// client EXE from GitHub Releases, writes the server URL to server.txt, and
-// launches the executable. Run it on Windows with: irm <url>/launch.ps1 | iex
+// launchScriptHandler serves a PowerShell one-liner bootstrap: downloads the
+// latest client EXE from GitHub Releases, writes server.txt, and launches it.
+// Usage: irm http://<host>/launch.ps1 | iex
 func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scheme := "ws"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
@@ -82,7 +82,6 @@ Write-Host 'Starting RemoteMaster...'
 Start-Process -FilePath $exe -WorkingDirectory $dir
 `
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=launch.ps1")
 	fmt.Fprintf(w, ps1, serverURL)
 }
 
