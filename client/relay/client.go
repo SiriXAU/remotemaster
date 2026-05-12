@@ -39,12 +39,12 @@ type ctrlMsg struct {
 
 // Client manages the WebSocket relay connection and drives the capture loop.
 type Client struct {
-	serverURL  string
-	cap        capture.Capturer
-	inj        input.Injector
-	onCode     func(code string)
-	onConnect  func()
-	onDisconn  func()
+	serverURL string
+	cap       capture.Capturer
+	inj       input.Injector
+	onCode    func(code string)
+	onConnect func()
+	onDisconn func()
 	// OnConnFail is called when the server cannot be reached at all (dial error),
 	// as opposed to onDisconn which fires after a working session drops.
 	OnConnFail func()
@@ -109,7 +109,7 @@ func (c *Client) connect(ctx context.Context) error {
 
 	// Wait for the "registered" message to get our session code.
 	var reg ctrlMsg
-	if err := readJSON(ctx, conn, &reg); err != nil {
+	if err := readJSON(dialCtx, conn, &reg); err != nil {
 		return dialErr{fmt.Errorf("waiting for registration: %w", err)}
 	}
 	if reg.Type != "registered" {
@@ -121,30 +121,68 @@ func (c *Client) connect(ctx context.Context) error {
 	log.Printf("relay: session code = %s", reg.Code)
 
 	// Wait for "agent_connected" before starting the capture loop.
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+
 	agentCh := make(chan struct{}, 1)
 	inputCh := make(chan input.Event, 64)
+	readErrCh := make(chan error, 1)
 
-	go c.readPump(ctx, conn, agentCh, inputCh)
-	go c.injectLoop(ctx, inputCh)
+	go c.readPump(connCtx, conn, agentCh, inputCh, readErrCh)
+	go c.injectLoop(connCtx, inputCh)
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-agentCh:
+	case err := <-readErrCh:
+		if err == nil {
+			return fmt.Errorf("connection closed while waiting for agent")
+		}
+		return fmt.Errorf("read while waiting for agent: %w", err)
 	}
 
 	if c.onConnect != nil {
 		c.onConnect()
 	}
 
-	return c.captureLoop(ctx, conn)
+	captureErrCh := make(chan error, 1)
+	go func() {
+		captureErrCh <- c.captureLoop(connCtx, conn)
+	}()
+
+	select {
+	case <-ctx.Done():
+		connCancel()
+		return ctx.Err()
+	case err := <-readErrCh:
+		connCancel()
+		if err == nil {
+			return fmt.Errorf("connection closed")
+		}
+		return fmt.Errorf("read: %w", err)
+	case err := <-captureErrCh:
+		connCancel()
+		return err
+	}
 }
 
 // readPump handles both JSON control messages and binary input events.
-func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan struct{}, inputCh chan input.Event) {
+func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan<- struct{}, inputCh chan<- input.Event, errCh chan<- error) {
+	report := func(err error) {
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+
 	for {
 		mt, b, err := conn.Read(ctx)
 		if err != nil {
+			report(err)
 			return
 		}
 		if mt == websocket.MessageBinary {
@@ -173,6 +211,8 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 			if c.onDisconn != nil {
 				c.onDisconn()
 			}
+			report(fmt.Errorf("agent disconnected"))
+			return
 		}
 	}
 }
@@ -220,12 +260,14 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 
-		// Fast pixel-sampling hash: sample every 32nd pixel before encoding.
-		// This is ~10x cheaper than MD5 on the full encoded output.
+		// Hash the full raw frame before encoding. The previous sampled hash was
+		// fast, but could miss small cursor/caret/text changes that matter in a
+		// remote desktop session.
 		frameHasher.Reset()
 		pix := nrgba.Pix
-		for i := 0; i+4 <= len(pix); i += 128 {
-			frameHasher.Write(pix[i : i+4])
+		if _, err := frameHasher.Write(pix); err != nil {
+			log.Printf("frame hash: %v", err)
+			continue
 		}
 		if h := frameHasher.Sum64(); h == lastHash {
 			continue

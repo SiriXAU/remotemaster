@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	modUser32   = windows.NewLazyDLL("user32.dll")
-	modGDI32    = windows.NewLazyDLL("gdi32.dll")
+	modUser32 = windows.NewLazyDLL("user32.dll")
+	modGDI32  = windows.NewLazyDLL("gdi32.dll")
 
 	procGetDC               = modUser32.NewProc("GetDC")
 	procReleaseDC           = modUser32.NewProc("ReleaseDC")
@@ -28,11 +28,12 @@ var (
 )
 
 const (
-	smCxScreen      = 0
-	smCyScreen      = 1
-	srccopy         = 0x00CC0020
-	dibRgbBitmaps   = 0
-	biRgb           = 0
+	smCxScreen    = 0
+	smCyScreen    = 1
+	srccopy       = 0x00CC0020
+	captureBlt    = 0x40000000
+	dibRgbBitmaps = 0
+	biRgb         = 0
 )
 
 type bitmapInfoHeader struct {
@@ -101,7 +102,7 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 	ret, _, _ := procBitBlt.Call(
 		memDC, 0, 0, uintptr(c.w), uintptr(c.h),
 		screenDC, 0, 0,
-		srccopy,
+		srccopy|captureBlt,
 	)
 	if ret == 0 {
 		return nil, fmt.Errorf("BitBlt failed")
@@ -137,7 +138,7 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 	img := image.NewNRGBA(image.Rect(0, 0, c.w, c.h))
 	for i := 0; i < len(pixels); i += 4 {
 		bgra := *(*uint32)(unsafe.Pointer(&pixels[i]))
-		rgba := (bgra&0xFF00FF00) | ((bgra & 0xFF) << 16) | ((bgra >> 16) & 0xFF) | 0xFF000000
+		rgba := (bgra & 0xFF00FF00) | ((bgra & 0xFF) << 16) | ((bgra >> 16) & 0xFF) | 0xFF000000
 		*(*uint32)(unsafe.Pointer(&img.Pix[i])) = rgba
 	}
 	return img, nil

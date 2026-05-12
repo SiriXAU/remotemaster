@@ -9,13 +9,19 @@ import (
 
 // Binary protocol message types.
 const (
-	binFrame     = 0x01
-	binMouseMove = 0x02
-	binMouseDown = 0x03
-	binMouseUp   = 0x04
-	binScroll    = 0x05
-	binKeyDown   = 0x06
-	binKeyUp     = 0x07
+	binFrame       = 0x01
+	binMouseMove   = 0x02
+	binMouseDown   = 0x03
+	binMouseUp     = 0x04
+	binScroll      = 0x05
+	binKeyDown     = 0x06
+	binKeyUp       = 0x07
+	binVideoConfig = 0x08
+	binVideoChunk  = 0x09
+)
+
+const (
+	videoChunkFlagKeyFrame = 0x01
 )
 
 // btnCodes maps agent button strings to binary protocol values.
@@ -29,6 +35,82 @@ func encodeFrame(w, h int, data []byte) []byte {
 	binary.BigEndian.PutUint32(buf[5:9], uint32(h))
 	copy(buf[9:], data)
 	return buf
+}
+
+type videoConfig struct {
+	W, H        int
+	Codec       string
+	Description []byte
+}
+
+type videoChunk struct {
+	KeyFrame  bool
+	Timestamp uint64
+	Duration  uint32
+	Data      []byte
+}
+
+func encodeVideoConfig(w, h int, codec string, description []byte) ([]byte, error) {
+	codecBytes := []byte(codec)
+	if len(codecBytes) == 0 || len(codecBytes) > 255 {
+		return nil, fmt.Errorf("codec length must be 1..255 bytes")
+	}
+	if len(description) > 65535 {
+		return nil, fmt.Errorf("video config description too large")
+	}
+
+	buf := make([]byte, 12+len(codecBytes)+len(description))
+	buf[0] = binVideoConfig
+	buf[1] = byte(len(codecBytes))
+	binary.BigEndian.PutUint32(buf[2:6], uint32(w))
+	binary.BigEndian.PutUint32(buf[6:10], uint32(h))
+	binary.BigEndian.PutUint16(buf[10:12], uint16(len(description)))
+	copy(buf[12:], codecBytes)
+	copy(buf[12+len(codecBytes):], description)
+	return buf, nil
+}
+
+func decodeVideoConfig(p []byte) (videoConfig, bool) {
+	if len(p) < 12 || p[0] != binVideoConfig {
+		return videoConfig{}, false
+	}
+	codecLen := int(p[1])
+	descLen := int(binary.BigEndian.Uint16(p[10:12]))
+	if codecLen == 0 || len(p) < 12+codecLen+descLen {
+		return videoConfig{}, false
+	}
+	desc := make([]byte, descLen)
+	copy(desc, p[12+codecLen:12+codecLen+descLen])
+	return videoConfig{
+		W:           int(binary.BigEndian.Uint32(p[2:6])),
+		H:           int(binary.BigEndian.Uint32(p[6:10])),
+		Codec:       string(p[12 : 12+codecLen]),
+		Description: desc,
+	}, true
+}
+
+func encodeVideoChunk(timestamp uint64, duration uint32, keyFrame bool, data []byte) []byte {
+	buf := make([]byte, 14+len(data))
+	buf[0] = binVideoChunk
+	if keyFrame {
+		buf[1] = videoChunkFlagKeyFrame
+	}
+	binary.BigEndian.PutUint64(buf[2:10], timestamp)
+	binary.BigEndian.PutUint32(buf[10:14], duration)
+	copy(buf[14:], data)
+	return buf
+}
+
+func decodeVideoChunk(p []byte) (videoChunk, bool) {
+	if len(p) < 14 || p[0] != binVideoChunk {
+		return videoChunk{}, false
+	}
+	return videoChunk{
+		KeyFrame:  p[1]&videoChunkFlagKeyFrame != 0,
+		Timestamp: binary.BigEndian.Uint64(p[2:10]),
+		Duration:  binary.BigEndian.Uint32(p[10:14]),
+		Data:      p[14:],
+	}, true
 }
 
 func decodeEvent(p []byte) (input.Event, bool) {

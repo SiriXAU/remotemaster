@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	modUser32       = windows.NewLazyDLL("user32.dll")
-	procSendInput   = modUser32.NewProc("SendInput")
-	procGetSMX      = modUser32.NewProc("GetSystemMetrics")
+	modUser32     = windows.NewLazyDLL("user32.dll")
+	procSendInput = modUser32.NewProc("SendInput")
+	procGetSMX    = modUser32.NewProc("GetSystemMetrics")
 )
 
 const (
@@ -29,12 +29,12 @@ const (
 	mouseWheel      = 0x0800
 	mouseHWheel     = 0x01000
 
-	keyDown    = 0x0000
-	keyUp      = 0x0002
+	keyDown     = 0x0000
+	keyUp       = 0x0002
 	extendedKey = 0x0001
 
-	smCxVScreen = 78
-	smCyVScreen = 79
+	smCxScreen = 0
+	smCyScreen = 1
 )
 
 // mouseInput mirrors the Win32 MOUSEINPUT structure.
@@ -76,10 +76,10 @@ type WindowsInjector struct {
 }
 
 func NewInjector() (*WindowsInjector, error) {
-	w, _, _ := procGetSMX.Call(smCxVScreen)
-	h, _, _ := procGetSMX.Call(smCyVScreen)
+	w, _, _ := procGetSMX.Call(smCxScreen)
+	h, _, _ := procGetSMX.Call(smCyScreen)
 	if w == 0 || h == 0 {
-		return nil, fmt.Errorf("could not get virtual screen size")
+		return nil, fmt.Errorf("could not get primary screen size")
 	}
 	return &WindowsInjector{screenW: int(w), screenH: int(h)}, nil
 }
@@ -94,8 +94,14 @@ func (inj *WindowsInjector) Inject(e Event) error {
 		}
 		return inj.mouseEvent(e.X, e.Y, inj.downFlag(e.Btn), 0)
 	case TypeMouseUp:
+		if err := inj.mouseEvent(e.X, e.Y, mouseMoveAbs, 0); err != nil {
+			return err
+		}
 		return inj.mouseEvent(e.X, e.Y, inj.upFlag(e.Btn), 0)
 	case TypeScroll:
+		if err := inj.mouseEvent(e.X, e.Y, mouseMoveAbs, 0); err != nil {
+			return err
+		}
 		if e.Dy != 0 {
 			if err := inj.mouseEvent(e.X, e.Y, mouseWheel, uint32(e.Dy*-120)); err != nil {
 				return err
@@ -117,8 +123,12 @@ func (inj *WindowsInjector) Inject(e Event) error {
 
 func (inj *WindowsInjector) mouseEvent(x, y int, flags, data uint32) error {
 	// Scale x,y (in remote pixel coords) to absolute 0-65535 range.
-	absX := int32(x * 65535 / inj.screenW)
-	absY := int32(y * 65535 / inj.screenH)
+	x = clamp(x, 0, inj.screenW-1)
+	y = clamp(y, 0, inj.screenH-1)
+	denomX := max(inj.screenW-1, 1)
+	denomY := max(inj.screenH-1, 1)
+	absX := int32(x * 65535 / denomX)
+	absY := int32(y * 65535 / denomY)
 
 	inp := inputUnion{
 		Type: inputMouse,
@@ -134,6 +144,16 @@ func (inj *WindowsInjector) mouseEvent(x, y int, flags, data uint32) error {
 		return fmt.Errorf("SendInput mouse: %w", err)
 	}
 	return nil
+}
+
+func clamp(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 func (inj *WindowsInjector) keyEvent(vk uint16, flags uint32) error {
