@@ -44,7 +44,7 @@ Output: `dist/remotemaster-client.exe` (~6 MB, no install required)
 ## Project layout
 
 ```
-client/          Windows client (Go, pure — no CGo)
+client/          Windows client (Go, Win32 syscalls + CGo WebP encoder)
   capture/       GDI screen capture via Win32 syscalls
   input/         SendInput mouse/keyboard injection
   ui/            Native Win32 floating window
@@ -58,7 +58,15 @@ server/          Relay server (Go)
 deploy/          Docker Compose + optional nginx TLS config
 build/           Cross-compile scripts
 dist/            Build output (gitignored)
+docs/            Design notes, including the H.264 streaming path
 ```
+
+## H.264 streaming
+
+The current release streams WebP image frames. The browser viewer and client
+protocol now include a WebCodecs-ready H.264 message format so the Windows
+client can add Media Foundation encoding without changing the relay. See
+[`docs/h264-streaming.md`](docs/h264-streaming.md).
 
 ## macOS client (future)
 
