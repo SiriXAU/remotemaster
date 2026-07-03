@@ -25,6 +25,8 @@ import (
 //go:embed agent
 var agentFS embed.FS
 
+// store and joinAttempts are initialized in main from environment-configurable
+// limits (see docs/deployment.md); the defaults here keep tests self-contained.
 var store = session.NewStore()
 var joinAttempts = newAttemptLimiter(8, time.Minute, 5*time.Minute)
 
@@ -50,6 +52,17 @@ func main() {
 	}
 
 	trustProxyHeaders = os.Getenv("TRUST_PROXY_HEADERS") == "1"
+
+	store = session.NewStoreWithTTLs(
+		envDuration("PENDING_SESSION_TTL", session.DefaultPendingTTL),
+		envDuration("ACTIVE_SESSION_TTL", session.DefaultActiveTTL),
+	)
+	joinAttempts = newAttemptLimiter(
+		envInt("JOIN_ATTEMPT_LIMIT", 8),
+		envDuration("JOIN_ATTEMPT_WINDOW", time.Minute),
+		envDuration("JOIN_ATTEMPT_BLOCK", 5*time.Minute),
+	)
+	relay.MaxMessageBytes = envInt64("MAX_MESSAGE_BYTES", relay.MaxMessageBytes)
 
 	sub, err := fs.Sub(agentFS, "agent")
 	if err != nil {

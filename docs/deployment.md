@@ -78,4 +78,33 @@ one-liner will pull upstream binaries.
 - **Pending client probe:** every 30 s the server pings a waiting client and
   reaps it if the ping fails.
 
-These are compile-time constants in `server/session/session.go`.
+## Configuration reference
+
+All limits are tunable via environment variables. Invalid or non-positive
+values fall back to the default (with a log line), so a typo can never
+disable a safety limit.
+
+### Server
+
+| Variable              | Default    | Meaning                                             |
+|-----------------------|------------|-----------------------------------------------------|
+| `SERVER_ADDR`         | `:8080`    | Listen address                                      |
+| `TRUST_PROXY_HEADERS` | unset      | Set to `1` behind a trusted reverse proxy (above)   |
+| `PENDING_SESSION_TTL` | `10m`      | Lifetime of a code with no agent joined             |
+| `ACTIVE_SESSION_TTL`  | `8h`       | Hard cap on a joined session                        |
+| `JOIN_ATTEMPT_LIMIT`  | `8`        | Failed joins per IP per window before blocking      |
+| `JOIN_ATTEMPT_WINDOW` | `1m`       | Window over which failed joins are counted          |
+| `JOIN_ATTEMPT_BLOCK`  | `5m`       | How long an IP over the limit stays blocked         |
+| `MAX_MESSAGE_BYTES`   | `10485760` | Per-message relay read limit (frames, input)        |
+
+Durations use Go syntax: `30s`, `10m`, `8h`.
+
+### Client (Windows)
+
+| Variable              | Default | Range   | Meaning                        |
+|-----------------------|---------|---------|--------------------------------|
+| `REMOTEMASTER_FPS`    | `15`    | 1–60    | Capture/send frame rate        |
+| `REMOTEMASTER_QUALITY`| `65`    | 1–100   | WebP encode quality per frame  |
+
+Set these in the environment the client is launched from (out-of-range
+values are clamped). Lower both on constrained links; raise FPS on a LAN.

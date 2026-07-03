@@ -9,9 +9,10 @@ import (
 	"nhooyr.io/websocket"
 )
 
+// Default session lifetimes, overridable per store via NewStoreWithTTLs.
 const (
-	pendingSessionTTL = 10 * time.Minute
-	activeSessionTTL  = 8 * time.Hour
+	DefaultPendingTTL = 10 * time.Minute
+	DefaultActiveTTL  = 8 * time.Hour
 )
 
 type Session struct {
@@ -26,12 +27,30 @@ type Session struct {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session
+	mu         sync.RWMutex
+	sessions   map[string]*Session
+	pendingTTL time.Duration
+	activeTTL  time.Duration
 }
 
 func NewStore() *Store {
-	s := &Store{sessions: make(map[string]*Session)}
+	return NewStoreWithTTLs(DefaultPendingTTL, DefaultActiveTTL)
+}
+
+// NewStoreWithTTLs creates a store with custom session lifetimes. Non-positive
+// values fall back to the defaults.
+func NewStoreWithTTLs(pendingTTL, activeTTL time.Duration) *Store {
+	if pendingTTL <= 0 {
+		pendingTTL = DefaultPendingTTL
+	}
+	if activeTTL <= 0 {
+		activeTTL = DefaultActiveTTL
+	}
+	s := &Store{
+		sessions:   make(map[string]*Session),
+		pendingTTL: pendingTTL,
+		activeTTL:  activeTTL,
+	}
 	go s.expireLoop()
 	return s
 }
@@ -128,25 +147,7 @@ func (s *Store) expireLoop() {
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
 	for range t.C {
-		now := time.Now()
-		var expired []*Session
-
-		s.mu.Lock()
-		for code, sess := range s.sessions {
-			ttl := pendingSessionTTL
-			start := sess.CreatedAt
-			if !sess.JoinedAt.IsZero() {
-				ttl = activeSessionTTL
-				start = sess.JoinedAt
-			}
-			if now.Sub(start) > ttl {
-				delete(s.sessions, code)
-				expired = append(expired, sess)
-			}
-		}
-		s.mu.Unlock()
-
-		for _, sess := range expired {
+		for _, sess := range s.expireOnce(time.Now()) {
 			if sess.ClientConn != nil {
 				sess.ClientConn.Close(websocket.StatusNormalClosure, "session expired")
 			}
@@ -155,4 +156,25 @@ func (s *Store) expireLoop() {
 			}
 		}
 	}
+}
+
+// expireOnce removes and returns every session past its TTL as of now.
+func (s *Store) expireOnce(now time.Time) []*Session {
+	var expired []*Session
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for code, sess := range s.sessions {
+		ttl := s.pendingTTL
+		start := sess.CreatedAt
+		if !sess.JoinedAt.IsZero() {
+			ttl = s.activeTTL
+			start = sess.JoinedAt
+		}
+		if now.Sub(start) > ttl {
+			delete(s.sessions, code)
+			expired = append(expired, sess)
+		}
+	}
+	return expired
 }

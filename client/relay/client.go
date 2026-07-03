@@ -25,9 +25,9 @@ func (e dialErr) Error() string { return "dial: " + e.err.Error() }
 func (e dialErr) Unwrap() error { return e.err }
 
 const (
-	frameQuality = 65
-	targetFPS    = 15
-	dialTimeout  = 10 * time.Second
+	defaultFrameQuality = 65
+	defaultTargetFPS    = 15
+	dialTimeout         = 10 * time.Second
 )
 
 // ctrlMsg is the JSON control message struct used during session setup.
@@ -48,6 +48,9 @@ type Client struct {
 	// OnConnFail is called when the server cannot be reached at all (dial error),
 	// as opposed to onDisconn which fires after a working session drops.
 	OnConnFail func()
+
+	targetFPS    int
+	frameQuality float32
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -59,6 +62,10 @@ func New(serverURL string, cap capture.Capturer, inj input.Injector,
 		onCode:    onCode,
 		onConnect: onConnect,
 		onDisconn: onDisconn,
+		// Overridable per machine without a rebuild — useful on slow links
+		// (lower both) or fast LANs (raise FPS).
+		targetFPS:    envClampedInt("REMOTEMASTER_FPS", defaultTargetFPS, 1, 60),
+		frameQuality: float32(envClampedInt("REMOTEMASTER_QUALITY", defaultFrameQuality, 1, 100)),
 	}
 }
 
@@ -234,7 +241,7 @@ func (c *Client) injectLoop(ctx context.Context, ch chan input.Event) {
 }
 
 func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
-	ticker := time.NewTicker(time.Second / targetFPS)
+	ticker := time.NewTicker(time.Second / time.Duration(c.targetFPS))
 	defer ticker.Stop()
 
 	w, h := c.cap.Bounds()
@@ -275,7 +282,7 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			lastHash = h
 		}
 
-		data, err := webp.EncodeRGBA(img, float32(frameQuality))
+		data, err := webp.EncodeRGBA(img, c.frameQuality)
 		if err != nil || len(data) == 0 {
 			log.Printf("webp encode: %v", err)
 			continue
