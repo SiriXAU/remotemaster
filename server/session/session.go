@@ -37,7 +37,13 @@ func NewStore() *Store {
 }
 
 func (s *Store) Create(conn *websocket.Conn) (*Session, error) {
-	code, err := s.generateCode()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Generate and insert under the same write lock so two concurrent Create
+	// calls cannot both claim the same code (a check-then-insert race would let
+	// the second overwrite the first, orphaning its connection).
+	code, err := s.generateCodeLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +53,7 @@ func (s *Store) Create(conn *websocket.Conn) (*Session, error) {
 		CreatedAt:  time.Now(),
 		joined:     make(chan struct{}),
 	}
-	s.mu.Lock()
 	s.sessions[code] = sess
-	s.mu.Unlock()
 	return sess, nil
 }
 
@@ -103,9 +107,9 @@ func (s *Session) WaitPendingProbe() {
 	s.probeMu.Unlock()
 }
 
-func (s *Store) generateCode() (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// generateCodeLocked returns an unused 6-digit code. The caller must hold
+// s.mu for writing.
+func (s *Store) generateCodeLocked() (string, error) {
 	for range 20 {
 		b := make([]byte, 3)
 		if _, err := rand.Read(b); err != nil {

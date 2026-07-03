@@ -55,9 +55,22 @@ type bitmapInfo struct {
 }
 
 // GDICapturer captures screens using GDI BitBlt (no CGo required).
+//
+// The GDI device contexts, the compatible bitmap, the DIB pixel buffer, and the
+// destination image are allocated once and reused across every Capture call.
+// Recreating them per frame (as an earlier version did) cost several kernel
+// round-trips and ~2×frame-size heap allocations at the target frame rate.
 type GDICapturer struct {
 	mu   sync.Mutex
 	w, h int
+
+	initialized bool
+	screenDC    uintptr
+	memDC       uintptr
+	bmp         uintptr
+	oldObj      uintptr
+	pixels      []byte
+	img         *image.NRGBA
 }
 
 // New returns a new GDICapturer. Call Close when done.
@@ -72,39 +85,92 @@ func New() (*GDICapturer, error) {
 
 func (c *GDICapturer) Bounds() (int, int) { return c.w, c.h }
 
-func (c *GDICapturer) Close() {}
+// Close releases the cached GDI resources. Safe to call more than once.
+func (c *GDICapturer) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.release()
+}
+
+// release frees the cached GDI handles. The caller must hold c.mu.
+func (c *GDICapturer) release() {
+	if !c.initialized {
+		return
+	}
+	if c.memDC != 0 {
+		if c.oldObj != 0 {
+			procSelectObject.Call(c.memDC, c.oldObj)
+		}
+		procDeleteDC.Call(c.memDC)
+	}
+	if c.bmp != 0 {
+		procDeleteObject.Call(c.bmp)
+	}
+	if c.screenDC != 0 {
+		procReleaseDC.Call(0, c.screenDC)
+	}
+	c.screenDC, c.memDC, c.bmp, c.oldObj = 0, 0, 0, 0
+	c.pixels, c.img = nil, nil
+	c.initialized = false
+}
+
+// ensure lazily creates the reusable GDI context, bitmap, and buffers. The
+// caller must hold c.mu.
+func (c *GDICapturer) ensure() error {
+	if c.initialized {
+		return nil
+	}
+
+	screenDC, _, _ := procGetDC.Call(0)
+	if screenDC == 0 {
+		return fmt.Errorf("GetDC failed")
+	}
+	memDC, _, _ := procCreateCompatibleDC.Call(screenDC)
+	if memDC == 0 {
+		procReleaseDC.Call(0, screenDC)
+		return fmt.Errorf("CreateCompatibleDC failed")
+	}
+	bmp, _, _ := procCreateCompatibleBmp.Call(screenDC, uintptr(c.w), uintptr(c.h))
+	if bmp == 0 {
+		procDeleteDC.Call(memDC)
+		procReleaseDC.Call(0, screenDC)
+		return fmt.Errorf("CreateCompatibleBitmap failed")
+	}
+	oldObj, _, _ := procSelectObject.Call(memDC, bmp)
+
+	c.screenDC = screenDC
+	c.memDC = memDC
+	c.bmp = bmp
+	c.oldObj = oldObj
+	c.pixels = make([]byte, c.w*c.h*4)
+	c.img = image.NewNRGBA(image.Rect(0, 0, c.w, c.h))
+	c.initialized = true
+	return nil
+}
 
 // Capture takes a screenshot of the primary monitor and returns an NRGBA image.
+//
+// The returned image reuses an internal buffer and is only valid until the next
+// Capture call — callers must finish reading (encoding/hashing) it before
+// capturing again. The existing single-goroutine capture loop satisfies this.
 func (c *GDICapturer) Capture() (image.Image, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	screenDC, _, _ := procGetDC.Call(0)
-	if screenDC == 0 {
-		return nil, fmt.Errorf("GetDC failed")
+	if err := c.ensure(); err != nil {
+		return nil, err
 	}
-	defer procReleaseDC.Call(0, screenDC)
-
-	memDC, _, _ := procCreateCompatibleDC.Call(screenDC)
-	if memDC == 0 {
-		return nil, fmt.Errorf("CreateCompatibleDC failed")
-	}
-	defer procDeleteDC.Call(memDC)
-
-	bmp, _, _ := procCreateCompatibleBmp.Call(screenDC, uintptr(c.w), uintptr(c.h))
-	if bmp == 0 {
-		return nil, fmt.Errorf("CreateCompatibleBitmap failed")
-	}
-	defer procDeleteObject.Call(bmp)
-
-	procSelectObject.Call(memDC, bmp)
 
 	ret, _, _ := procBitBlt.Call(
-		memDC, 0, 0, uintptr(c.w), uintptr(c.h),
-		screenDC, 0, 0,
+		c.memDC, 0, 0, uintptr(c.w), uintptr(c.h),
+		c.screenDC, 0, 0,
 		srccopy|captureBlt,
 	)
 	if ret == 0 {
+		// A failed BitBlt can mean the display context was invalidated (e.g. a
+		// resolution change or session switch); drop the cache so the next call
+		// rebuilds it.
+		c.release()
 		return nil, fmt.Errorf("BitBlt failed")
 	}
 
@@ -117,14 +183,13 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 		BiCompression: biRgb,
 	}
 	bi := bitmapInfo{BmiHeader: bih}
-	pixels := make([]byte, c.w*c.h*4)
 
 	ret, _, _ = procGetDIBits.Call(
-		screenDC,
-		bmp,
+		c.screenDC,
+		c.bmp,
 		0,
 		uintptr(c.h),
-		uintptr(unsafe.Pointer(&pixels[0])),
+		uintptr(unsafe.Pointer(&c.pixels[0])),
 		uintptr(unsafe.Pointer(&bi)),
 		dibRgbBitmaps,
 	)
@@ -135,11 +200,12 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 	// GDI returns BGRA; convert to RGBA for image.NRGBA using 32-bit swaps.
 	// Each iteration handles one pixel via uint32 bit manipulation instead of
 	// four byte operations, roughly halving memory traffic.
-	img := image.NewNRGBA(image.Rect(0, 0, c.w, c.h))
+	pixels := c.pixels
+	dst := c.img.Pix
 	for i := 0; i < len(pixels); i += 4 {
 		bgra := *(*uint32)(unsafe.Pointer(&pixels[i]))
 		rgba := (bgra & 0xFF00FF00) | ((bgra & 0xFF) << 16) | ((bgra >> 16) & 0xFF) | 0xFF000000
-		*(*uint32)(unsafe.Pointer(&img.Pix[i])) = rgba
+		*(*uint32)(unsafe.Pointer(&dst[i])) = rgba
 	}
-	return img, nil
+	return c.img, nil
 }

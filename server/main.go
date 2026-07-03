@@ -28,6 +28,11 @@ var agentFS embed.FS
 var store = session.NewStore()
 var joinAttempts = newAttemptLimiter(8, time.Minute, 5*time.Minute)
 
+// trustProxyHeaders controls whether X-Forwarded-* headers are honored. Enable
+// it (TRUST_PROXY_HEADERS=1) only when the server sits behind a reverse proxy
+// that sets these headers; otherwise they are client-controlled and unsafe.
+var trustProxyHeaders bool
+
 // bg is used for WebSocket operations after the HTTP handler returns.
 // WebSocket connections are hijacked and outlive the request context.
 var bg = context.Background()
@@ -43,6 +48,8 @@ func main() {
 	if addr == "" {
 		addr = ":8080"
 	}
+
+	trustProxyHeaders = os.Getenv("TRUST_PROXY_HEADERS") == "1"
 
 	sub, err := fs.Sub(agentFS, "agent")
 	if err != nil {
@@ -67,12 +74,17 @@ func main() {
 // Usage: irm http://<host>/launch.ps1 | iex
 func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scheme := "ws"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if r.TLS != nil || (trustProxyHeaders && r.Header.Get("X-Forwarded-Proto") == "https") {
 		scheme = "wss"
 	}
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
+	host := requestHost(r)
+	// serverURL is interpolated into the PowerShell script below, so an
+	// unsanitized host (e.g. from a spoofed Host header) could break out of the
+	// single-quoted string literal and inject commands into a script users run
+	// with `iex`. Reject anything that is not a plain host[:port].
+	if !isValidHost(host) {
+		http.Error(w, "invalid host", http.StatusBadRequest)
+		return
 	}
 	serverURL := scheme + "://" + host
 
@@ -115,6 +127,12 @@ func clientHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Disable the per-message read limit immediately after accept. The default
+	// nhooyr.io/websocket limit is 32 KiB and is enforced at frame-receipt time,
+	// before the relay bridge gets a chance to raise it — so a single WebP frame
+	// sent while waiting for the viewer would otherwise close the connection.
+	conn.SetReadLimit(-1)
+
 	sess, err := store.Create(conn)
 	if err != nil {
 		conn.Close(websocket.StatusInternalError, "server error")
@@ -144,13 +162,20 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
 	}
-	if !joinAttempts.Allow(clientIP(r)) {
+
+	// The rate limiter only counts *failed* join attempts (bad code format or an
+	// unknown/already-claimed code) — the signature of a brute-force scan of the
+	// code space. A successful join costs nothing, so a legitimate viewer that
+	// reconnects to its own session is never locked out.
+	ip := clientIP(r)
+	if joinAttempts.Blocked(ip) {
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if !isSixDigitCode(code) {
+		joinAttempts.Fail(ip)
 		http.Error(w, "code must be 6 digits", http.StatusBadRequest)
 		return
 	}
@@ -163,8 +188,12 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Match clientHandler: remove the default 32 KiB read limit up front.
+	conn.SetReadLimit(-1)
+
 	sess, ok := store.Join(code, conn)
 	if !ok {
+		joinAttempts.Fail(ip)
 		wsjson.Write(bg, conn, wireMsg{Type: "error", Msg: "invalid or already-claimed code"})
 		conn.Close(websocket.StatusNormalClosure, "invalid code")
 		return
@@ -252,17 +281,48 @@ func allowWebSocketOrigin(r *http.Request) bool {
 		return false
 	}
 
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
+	return strings.EqualFold(u.Host, requestHost(r))
+}
+
+// requestHost returns the host the request was addressed to. The forwarded
+// header is only honored when the server is explicitly configured to sit behind
+// a trusted proxy; otherwise it is client-controlled and must not be trusted.
+func requestHost(r *http.Request) string {
+	if trustProxyHeaders {
+		if h := r.Header.Get("X-Forwarded-Host"); h != "" {
+			return h
+		}
 	}
-	return strings.EqualFold(u.Host, host)
+	return r.Host
+}
+
+// isValidHost reports whether host is a plain hostname or host:port containing
+// only characters valid in that context (letters, digits, and .-:[]). It is used
+// to reject header values before they are interpolated into generated scripts.
+func isValidHost(host string) bool {
+	if host == "" || len(host) > 255 {
+		return false
+	}
+	for _, c := range host {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == ':' || c == '[' || c == ']':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-			return first
+	// Only trust X-Forwarded-For behind a configured proxy. Otherwise it is
+	// attacker-controlled and would let a single host spoof unlimited distinct
+	// keys, defeating the join-attempt rate limiter.
+	if trustProxyHeaders {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -287,15 +347,31 @@ type attemptState struct {
 }
 
 func newAttemptLimiter(limit int, window, block time.Duration) *attemptLimiter {
-	return &attemptLimiter{
+	l := &attemptLimiter{
 		limit:       limit,
 		window:      window,
 		block:       block,
 		byRequester: make(map[string]attemptState),
 	}
+	go l.cleanupLoop()
+	return l
 }
 
-func (l *attemptLimiter) Allow(requester string) bool {
+// Blocked reports whether the requester is currently within a block window.
+// It does not record an attempt.
+func (l *attemptLimiter) Blocked(requester string) bool {
+	now := time.Now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	state, ok := l.byRequester[requester]
+	return ok && now.Before(state.BlockedUntil)
+}
+
+// Fail records one failed attempt for the requester, blocking it once the
+// per-window limit is exceeded.
+func (l *attemptLimiter) Fail(requester string) {
 	now := time.Now()
 
 	l.mu.Lock()
@@ -303,7 +379,7 @@ func (l *attemptLimiter) Allow(requester string) bool {
 
 	state := l.byRequester[requester]
 	if now.Before(state.BlockedUntil) {
-		return false
+		return
 	}
 	if state.WindowStart.IsZero() || now.Sub(state.WindowStart) > l.window {
 		state = attemptState{WindowStart: now}
@@ -312,10 +388,23 @@ func (l *attemptLimiter) Allow(requester string) bool {
 	state.Count++
 	if state.Count > l.limit {
 		state.BlockedUntil = now.Add(l.block)
-		l.byRequester[requester] = state
-		return false
 	}
-
 	l.byRequester[requester] = state
-	return true
+}
+
+// cleanupLoop periodically evicts entries that are neither blocked nor within an
+// active counting window, so the map cannot grow without bound.
+func (l *attemptLimiter) cleanupLoop() {
+	t := time.NewTicker(l.block)
+	defer t.Stop()
+	for range t.C {
+		now := time.Now()
+		l.mu.Lock()
+		for requester, state := range l.byRequester {
+			if now.After(state.BlockedUntil) && now.Sub(state.WindowStart) > l.window {
+				delete(l.byRequester, requester)
+			}
+		}
+		l.mu.Unlock()
+	}
 }

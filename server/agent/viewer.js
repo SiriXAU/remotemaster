@@ -299,6 +299,9 @@
 
         case 'agent_disconnected':
         case 'disconnect':
+          // The session is over; mark it dead so onclose does not reconnect
+          // into a code the server has already removed.
+          dead = true;
           setStatus('error', 'Session ended');
           showOverlay('The remote session has ended.');
           ws.close();
