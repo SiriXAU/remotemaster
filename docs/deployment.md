@@ -69,6 +69,16 @@ direction. The endpoint reveals only aggregate numbers, but if you'd rather
 not serve it publicly, block `/metrics` at your reverse proxy and scrape the
 app port directly.
 
+### Audit logging
+
+Set `AUDIT_LOG` to `stderr`, `stdout`, or a file path to record session
+lifecycle events as JSON lines: `session_created`, `agent_joined` (with how
+long the code waited), `join_rejected` (with reason: `rate_limited`,
+`bad_code_format`, `bad_token`, `unknown_or_claimed_code`), `session_ended`
+(with duration), and `client_lost`. Each record carries the peer IP (subject
+to the `TRUST_PROXY_HEADERS` rules above). Session *recording* is not
+implemented — this is a who/when/how-long trail, not a what-happened one.
+
 ## Client distribution
 
 `/launch.ps1` downloads the client from the repository's rolling `latest` GitHub
@@ -103,6 +113,7 @@ disable a safety limit.
 | `JOIN_ATTEMPT_BLOCK`  | `5m`       | How long an IP over the limit stays blocked         |
 | `MAX_MESSAGE_BYTES`   | `10485760` | Per-message relay read limit (frames, input)        |
 | `AGENT_TOKEN`         | unset      | Pre-shared secret agents must present to join (see [security.md](security.md)) |
+| `AUDIT_LOG`           | unset      | Audit destination: `stderr`, `stdout`, or a file path; unset disables |
 
 Durations use Go syntax: `30s`, `10m`, `8h`.
 

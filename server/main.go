@@ -19,6 +19,7 @@ import (
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 
+	"github.com/sirixau/remotemaster/server/audit"
 	"github.com/sirixau/remotemaster/server/metrics"
 	"github.com/sirixau/remotemaster/server/relay"
 	"github.com/sirixau/remotemaster/server/session"
@@ -58,6 +59,14 @@ func main() {
 	}
 
 	trustProxyHeaders = os.Getenv("TRUST_PROXY_HEADERS") == "1"
+
+	if err := audit.Configure(os.Getenv("AUDIT_LOG")); err != nil {
+		log.Fatal(err)
+	}
+	if audit.Enabled() {
+		log.Printf("audit logging enabled (AUDIT_LOG=%s)", os.Getenv("AUDIT_LOG"))
+	}
+
 	agentToken = os.Getenv("AGENT_TOKEN")
 	if agentToken != "" {
 		log.Printf("agent auth: pre-shared token required to join sessions")
@@ -166,6 +175,7 @@ func clientHandler(w http.ResponseWriter, r *http.Request) {
 
 	metrics.SessionsCreated.Add(1)
 	log.Printf("client registered code=%s", sess.Code)
+	audit.Log(audit.Event{Event: audit.EventSessionCreated, Code: sess.Code, IP: clientIP(r)})
 
 	if err := wsjson.Write(bg, conn, wireMsg{Type: "registered", Code: sess.Code}); err != nil {
 		store.Remove(sess.Code)
@@ -195,6 +205,7 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if joinAttempts.Blocked(ip) {
 		metrics.JoinBlocked.Add(1)
+		audit.Log(audit.Event{Event: audit.EventJoinRejected, IP: ip, Reason: "rate_limited"})
 		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
@@ -203,6 +214,7 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	if !isSixDigitCode(code) {
 		joinAttempts.Fail(ip)
 		metrics.JoinFailures.Add(1)
+		audit.Log(audit.Event{Event: audit.EventJoinRejected, IP: ip, Reason: "bad_code_format"})
 		http.Error(w, "code must be 6 digits", http.StatusBadRequest)
 		return
 	}
@@ -210,6 +222,7 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	if !agentTokenValid(r) {
 		joinAttempts.Fail(ip)
 		metrics.JoinFailures.Add(1)
+		audit.Log(audit.Event{Event: audit.EventJoinRejected, Code: code, IP: ip, Reason: "bad_token"})
 		http.Error(w, "invalid or missing token", http.StatusForbidden)
 		return
 	}
@@ -229,6 +242,7 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		joinAttempts.Fail(ip)
 		metrics.JoinFailures.Add(1)
+		audit.Log(audit.Event{Event: audit.EventJoinRejected, Code: code, IP: ip, Reason: "unknown_or_claimed_code"})
 		wsjson.Write(bg, conn, wireMsg{Type: "error", Msg: "invalid or already-claimed code"})
 		conn.Close(websocket.StatusNormalClosure, "invalid code")
 		return
@@ -236,6 +250,10 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 
 	metrics.SessionsJoined.Add(1)
 	log.Printf("agent joined code=%s", code)
+	audit.Log(audit.Event{
+		Event: audit.EventAgentJoined, Code: code, IP: ip,
+		DurationSeconds: sess.JoinedAt.Sub(sess.CreatedAt).Seconds(),
+	})
 
 	// Tell agent it's joined
 	if err := wsjson.Write(bg, conn, wireMsg{Type: "joined", Code: code}); err != nil {
@@ -263,6 +281,10 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	relay.Bridge(bg, sess, func() {
 		store.Remove(code)
 		log.Printf("session ended code=%s", code)
+		audit.Log(audit.Event{
+			Event: audit.EventSessionEnded, Code: code, IP: ip,
+			DurationSeconds: time.Since(sess.JoinedAt).Seconds(),
+		})
 	})
 }
 
@@ -289,6 +311,7 @@ func monitorPendingClient(sess *session.Session) {
 			store.Remove(sess.Code)
 			sess.ClientConn.Close(websocket.StatusNormalClosure, "client disconnected")
 			log.Printf("pending client disconnected code=%s: %v", sess.Code, err)
+			audit.Log(audit.Event{Event: audit.EventClientLost, Code: sess.Code})
 			return
 		}
 	}

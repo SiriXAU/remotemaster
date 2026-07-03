@@ -62,8 +62,10 @@ against and what it deliberately does not.
 - **Rate limiting is per source IP and in-memory.** An attacker with many source
   IPs (a botnet) faces weaker limits, and limits are not shared across multiple
   relay instances.
-- **No audit logging or session recording.** The server logs connect/disconnect
-  events only.
+- **No session recording.** Structured audit logging of session lifecycle
+  (who joined which code, when, for how long — enable with `AUDIT_LOG`, see
+  [deployment.md](deployment.md)) is available, but the content of sessions
+  is not recorded.
 - **Single-instance only.** Session state is in process memory.
 
 ## Recommendations for operators
