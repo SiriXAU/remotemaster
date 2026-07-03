@@ -55,6 +55,7 @@ Byte 0 is the type tag.
 | `0x07` | key up | agent → client | `[type:1][vk:u16]` |
 | `0x08` | video config | client → agent | `[type:1][codecLen:1][w:u32][h:u32][descLen:u16][codec][description]` |
 | `0x09` | video chunk | client → agent | `[type:1][flags:1][timestamp:u64][duration:u32][payload]` |
+| `0x0A` | clipboard text | both | `[type:1][utf8 bytes]` |
 
 Notes:
 
@@ -70,6 +71,14 @@ Notes:
 - **`flags & 0x01`** on a video chunk marks an IDR/key frame. The viewer drops
   delta chunks until it has seen a key frame, and also skips deltas when the
   decoder's `decodeQueueSize` is backing up.
+- **Clipboard** payloads are UTF-8 with `\n` line endings (the Windows client
+  converts to/from CRLF at the OS boundary) and are capped at 256 KiB in both
+  directions. Both endpoints prime a baseline on the first observation and
+  only sync *changes*, so clipboard contents that predate the session are
+  never transmitted; each side records text it installs to avoid echo loops.
+  The browser side polls `navigator.clipboard.readText()` while focused
+  (requires clipboard permission on a secure context); the client polls the
+  Win32 clipboard once per second during an active session.
 
 ## Frame path (current)
 

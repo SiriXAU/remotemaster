@@ -18,7 +18,12 @@ const (
 	binKeyUp       = 0x07
 	binVideoConfig = 0x08
 	binVideoChunk  = 0x09
+	binClipboard   = 0x0A
 )
+
+// maxClipboardBytes caps clipboard payloads in both directions so a huge
+// copy (e.g. a file's contents) cannot stall the frame channel.
+const maxClipboardBytes = 256 * 1024
 
 const (
 	videoChunkFlagKeyFrame = 0x01
@@ -35,6 +40,22 @@ func encodeFrame(w, h int, data []byte) []byte {
 	binary.BigEndian.PutUint32(buf[5:9], uint32(h))
 	copy(buf[9:], data)
 	return buf
+}
+
+// encodeClipboard packs clipboard text as [0x0A][utf8 bytes].
+func encodeClipboard(text string) []byte {
+	b := make([]byte, 1+len(text))
+	b[0] = binClipboard
+	copy(b[1:], text)
+	return b
+}
+
+// decodeClipboard unpacks a clipboard message, rejecting oversized payloads.
+func decodeClipboard(p []byte) (string, bool) {
+	if len(p) < 1 || p[0] != binClipboard || len(p)-1 > maxClipboardBytes {
+		return "", false
+	}
+	return string(p[1:]), true
 }
 
 type videoConfig struct {

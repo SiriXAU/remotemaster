@@ -8,12 +8,14 @@ import (
 	"hash/fnv"
 	"image"
 	"log"
+	"sync"
 	"time"
 
 	"nhooyr.io/websocket"
 
 	"github.com/chai2010/webp"
 	"github.com/sirixau/remotemaster/client/capture"
+	"github.com/sirixau/remotemaster/client/clipboard"
 	"github.com/sirixau/remotemaster/client/input"
 )
 
@@ -49,8 +51,15 @@ type Client struct {
 	// as opposed to onDisconn which fires after a working session drops.
 	OnConnFail func()
 
+	// Clip, when set, enables bidirectional text clipboard sync with the agent.
+	Clip clipboard.Clipboard
+
 	targetFPS    int
 	frameQuality float32
+
+	clipMu     sync.Mutex
+	clipPrimed bool
+	lastClip   string
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -157,6 +166,7 @@ func (c *Client) connect(ctx context.Context) error {
 	go func() {
 		captureErrCh <- c.captureLoop(connCtx, conn)
 	}()
+	go c.clipboardLoop(connCtx, conn)
 
 	select {
 	case <-ctx.Done():
@@ -193,6 +203,12 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 			return
 		}
 		if mt == websocket.MessageBinary {
+			if len(b) > 0 && b[0] == binClipboard {
+				if text, ok := decodeClipboard(b); ok {
+					c.applyRemoteClipboard(text)
+				}
+				continue
+			}
 			ev, ok := decodeEvent(b)
 			if !ok {
 				continue
@@ -236,6 +252,70 @@ func (c *Client) injectLoop(ctx context.Context, ch chan input.Event) {
 			if err := c.inj.Inject(ev); err != nil {
 				log.Printf("inject %s: %v", ev.Type, err)
 			}
+		}
+	}
+}
+
+// applyRemoteClipboard installs agent clipboard text locally, recording it so
+// the poll loop does not echo the same text straight back.
+func (c *Client) applyRemoteClipboard(text string) {
+	c.clipMu.Lock()
+	c.clipPrimed = true
+	c.lastClip = text
+	c.clipMu.Unlock()
+
+	if c.Clip == nil {
+		return
+	}
+	if err := c.Clip.SetText(text); err != nil {
+		log.Printf("clipboard set: %v", err)
+	}
+}
+
+// noteLocalClipboard records locally observed clipboard text and reports
+// whether it should be sent to the agent. The first observation only primes
+// the baseline: clipboard contents that predate the session are never shipped.
+func (c *Client) noteLocalClipboard(text string) bool {
+	c.clipMu.Lock()
+	defer c.clipMu.Unlock()
+	if !c.clipPrimed {
+		c.clipPrimed = true
+		c.lastClip = text
+		return false
+	}
+	if text == c.lastClip {
+		return false
+	}
+	c.lastClip = text
+	return true
+}
+
+// clipboardLoop polls the OS clipboard and forwards changes to the agent.
+// Windows clipboard listeners need a message window, so a 1 s poll keeps this
+// simple and cheap (a no-change poll is two syscalls, no copy).
+func (c *Client) clipboardLoop(ctx context.Context, conn *websocket.Conn) {
+	if c.Clip == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		text, err := c.Clip.GetText()
+		if err != nil {
+			continue
+		}
+		if len(text) > maxClipboardBytes || !c.noteLocalClipboard(text) {
+			continue
+		}
+		if err := conn.Write(ctx, websocket.MessageBinary, encodeClipboard(text)); err != nil {
+			return
 		}
 	}
 }
