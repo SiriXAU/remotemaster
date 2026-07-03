@@ -75,6 +75,6 @@ against and what it deliberately does not.
 
 ## Reporting
 
-There is no formal security contact configured in this repository yet. If you
-find a vulnerability, open a minimal issue asking for a private channel rather
-than posting exploit details publicly.
+See [`SECURITY.md`](../SECURITY.md) at the repository root. In short: use
+GitHub's private vulnerability reporting (Security tab → Report a
+vulnerability) and do not post exploit details in public issues.

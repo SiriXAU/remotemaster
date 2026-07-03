@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache: true
+
+      - name: Vet server
+        run: go vet ./...
+        working-directory: server
+
+      - name: Vet client
+        run: go vet ./...
+        working-directory: client
+
+      - name: Test server
+        run: go test ./...
+        working-directory: server
+
+      - name: Test client
+        run: go test ./...
+        working-directory: client
