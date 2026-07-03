@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,10 @@ var joinAttempts = newAttemptLimiter(8, time.Minute, 5*time.Minute)
 // that sets these headers; otherwise they are client-controlled and unsafe.
 var trustProxyHeaders bool
 
+// agentToken, when non-empty (AGENT_TOKEN), is a pre-shared secret agents must
+// present to join any session — a leaked 6-digit code alone is then not enough.
+var agentToken string
+
 // bg is used for WebSocket operations after the HTTP handler returns.
 // WebSocket connections are hijacked and outlive the request context.
 var bg = context.Background()
@@ -53,6 +58,10 @@ func main() {
 	}
 
 	trustProxyHeaders = os.Getenv("TRUST_PROXY_HEADERS") == "1"
+	agentToken = os.Getenv("AGENT_TOKEN")
+	if agentToken != "" {
+		log.Printf("agent auth: pre-shared token required to join sessions")
+	}
 
 	store = session.NewStoreWithTTLs(
 		envDuration("PENDING_SESSION_TTL", session.DefaultPendingTTL),
@@ -198,6 +207,13 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !agentTokenValid(r) {
+		joinAttempts.Fail(ip)
+		metrics.JoinFailures.Add(1)
+		http.Error(w, "invalid or missing token", http.StatusForbidden)
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
 	})
@@ -276,6 +292,17 @@ func monitorPendingClient(sess *session.Session) {
 			return
 		}
 	}
+}
+
+// agentTokenValid reports whether the request may join sessions. With no
+// AGENT_TOKEN configured every request passes; otherwise the token query
+// parameter must match, compared in constant time.
+func agentTokenValid(r *http.Request) bool {
+	if agentToken == "" {
+		return true
+	}
+	got := r.URL.Query().Get("token")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(agentToken)) == 1
 }
 
 func isSixDigitCode(code string) bool {

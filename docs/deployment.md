@@ -102,6 +102,7 @@ disable a safety limit.
 | `JOIN_ATTEMPT_WINDOW` | `1m`       | Window over which failed joins are counted          |
 | `JOIN_ATTEMPT_BLOCK`  | `5m`       | How long an IP over the limit stays blocked         |
 | `MAX_MESSAGE_BYTES`   | `10485760` | Per-message relay read limit (frames, input)        |
+| `AGENT_TOKEN`         | unset      | Pre-shared secret agents must present to join (see [security.md](security.md)) |
 
 Durations use Go syntax: `30s`, `10m`, `8h`.
 

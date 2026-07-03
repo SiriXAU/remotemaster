@@ -5,6 +5,7 @@
 
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code') || '';
+  const token = params.get('token') || '';
 
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
@@ -267,7 +268,8 @@
   function connect() {
     if (dead) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}`);
+    const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+    ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}${tokenParam}`);
     ws.binaryType = 'arraybuffer';
     setStatus('waiting', 'Connecting...');
     showOverlay('Connecting to session...');

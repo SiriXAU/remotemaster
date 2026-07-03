@@ -267,7 +267,11 @@ document.getElementById('form').addEventListener('submit', e => {
   const code = getCode();
   if (code.length !== 6) return;
   errMsg.classList.remove('show');
-  window.location.href = `/viewer.html?code=${code}`;
+  // If the deployment requires a pre-shared agent token (AGENT_TOKEN on the
+  // server), it arrives on this page's URL and is passed through to the viewer.
+  const token = new URLSearchParams(window.location.search).get('token');
+  const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+  window.location.href = `/viewer.html?code=${code}${tokenParam}`;
 });
 
 // Build the PowerShell one-liner using the current page's origin.
