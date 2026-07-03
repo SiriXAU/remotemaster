@@ -114,9 +114,9 @@ func (inj *WindowsInjector) Inject(e Event) error {
 		}
 		return nil
 	case TypeKeyDown:
-		return inj.keyEvent(uint16(e.VK), keyDown)
+		return inj.keyEvent(uint16(e.VK), inj.keyFlags(e.VK, keyDown))
 	case TypeKeyUp:
-		return inj.keyEvent(uint16(e.VK), keyUp)
+		return inj.keyEvent(uint16(e.VK), inj.keyFlags(e.VK, keyUp))
 	}
 	return nil
 }
@@ -154,6 +154,15 @@ func clamp(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// keyFlags adds KEYEVENTF_EXTENDEDKEY for keys in the extended range so
+// navigation keys are not misread as their numpad twins.
+func (inj *WindowsInjector) keyFlags(vk int, base uint32) uint32 {
+	if IsExtendedVK(vk) {
+		return base | extendedKey
+	}
+	return base
 }
 
 func (inj *WindowsInjector) keyEvent(vk uint16, flags uint32) error {

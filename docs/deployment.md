@@ -60,8 +60,24 @@ proxy or load balancer, or long idle screens will be dropped mid-session.
 ## Health checks and monitoring
 
 `GET /health` returns `200` with `{"status":"ok","time":"<RFC3339>"}`. The
-Docker image already wires this into a `HEALTHCHECK`. There are no metrics
-endpoints yet; observability is on the [roadmap](../ROADMAP.md).
+Docker image already wires this into a `HEALTHCHECK`.
+
+`GET /metrics` exposes Prometheus counters and gauges (text exposition
+format, no dependency): pending/active sessions, sessions created and
+joined, join failures and rate-limit blocks, and messages/bytes relayed per
+direction. The endpoint reveals only aggregate numbers, but if you'd rather
+not serve it publicly, block `/metrics` at your reverse proxy and scrape the
+app port directly.
+
+### Audit logging
+
+Set `AUDIT_LOG` to `stderr`, `stdout`, or a file path to record session
+lifecycle events as JSON lines: `session_created`, `agent_joined` (with how
+long the code waited), `join_rejected` (with reason: `rate_limited`,
+`bad_code_format`, `bad_token`, `unknown_or_claimed_code`), `session_ended`
+(with duration), and `client_lost`. Each record carries the peer IP (subject
+to the `TRUST_PROXY_HEADERS` rules above). Session *recording* is not
+implemented — this is a who/when/how-long trail, not a what-happened one.
 
 ## Client distribution
 
@@ -78,4 +94,35 @@ one-liner will pull upstream binaries.
 - **Pending client probe:** every 30 s the server pings a waiting client and
   reaps it if the ping fails.
 
-These are compile-time constants in `server/session/session.go`.
+## Configuration reference
+
+All limits are tunable via environment variables. Invalid or non-positive
+values fall back to the default (with a log line), so a typo can never
+disable a safety limit.
+
+### Server
+
+| Variable              | Default    | Meaning                                             |
+|-----------------------|------------|-----------------------------------------------------|
+| `SERVER_ADDR`         | `:8080`    | Listen address                                      |
+| `TRUST_PROXY_HEADERS` | unset      | Set to `1` behind a trusted reverse proxy (above)   |
+| `PENDING_SESSION_TTL` | `10m`      | Lifetime of a code with no agent joined             |
+| `ACTIVE_SESSION_TTL`  | `8h`       | Hard cap on a joined session                        |
+| `JOIN_ATTEMPT_LIMIT`  | `8`        | Failed joins per IP per window before blocking      |
+| `JOIN_ATTEMPT_WINDOW` | `1m`       | Window over which failed joins are counted          |
+| `JOIN_ATTEMPT_BLOCK`  | `5m`       | How long an IP over the limit stays blocked         |
+| `MAX_MESSAGE_BYTES`   | `10485760` | Per-message relay read limit (frames, input)        |
+| `AGENT_TOKEN`         | unset      | Pre-shared secret agents must present to join (see [security.md](security.md)) |
+| `AUDIT_LOG`           | unset      | Audit destination: `stderr`, `stdout`, or a file path; unset disables |
+
+Durations use Go syntax: `30s`, `10m`, `8h`.
+
+### Client (Windows)
+
+| Variable              | Default | Range   | Meaning                        |
+|-----------------------|---------|---------|--------------------------------|
+| `REMOTEMASTER_FPS`    | `15`    | 1–60    | Capture/send frame rate        |
+| `REMOTEMASTER_QUALITY`| `65`    | 1–100   | WebP encode quality per frame  |
+
+Set these in the environment the client is launched from (out-of-range
+values are clamped). Lower both on constrained links; raise FPS on a LAN.

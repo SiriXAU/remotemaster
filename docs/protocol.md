@@ -55,6 +55,7 @@ Byte 0 is the type tag.
 | `0x07` | key up | agent → client | `[type:1][vk:u16]` |
 | `0x08` | video config | client → agent | `[type:1][codecLen:1][w:u32][h:u32][descLen:u16][codec][description]` |
 | `0x09` | video chunk | client → agent | `[type:1][flags:1][timestamp:u64][duration:u32][payload]` |
+| `0x0A` | clipboard text | both | `[type:1][utf8 bytes]` |
 
 Notes:
 
@@ -64,12 +65,26 @@ Notes:
 - **Button codes**: `0` left, `1` middle, `2` right.
 - **Scroll** `dx`/`dy` are signed line deltas (the viewer divides wheel pixel
   deltas by 40).
-- **Key codes** (`vk`) are Windows virtual-key codes. The browser currently
-  sends `KeyboardEvent.keyCode`, which lines up with VK codes for the common
-  set; see [ROADMAP.md](../ROADMAP.md) for the planned move to a stable mapping.
+- **Key codes** (`vk`) are Windows virtual-key codes. The viewer maps the
+  physical key (`KeyboardEvent.code`) through an explicit table
+  (`CODE_TO_VK` in `control.js`) covering letters, digits, F1–F24, numpad,
+  navigation, modifiers (with left/right distinction), and OEM punctuation,
+  falling back to the legacy `keyCode` only for unmapped keys. The client
+  sets `KEYEVENTF_EXTENDEDKEY` for keys in the extended range
+  (`input.IsExtendedVK`) so e.g. arrow keys are not misread as numpad
+  digits. On tab/canvas blur the viewer releases any held keys to avoid
+  stuck modifiers on the remote machine.
 - **`flags & 0x01`** on a video chunk marks an IDR/key frame. The viewer drops
   delta chunks until it has seen a key frame, and also skips deltas when the
   decoder's `decodeQueueSize` is backing up.
+- **Clipboard** payloads are UTF-8 with `\n` line endings (the Windows client
+  converts to/from CRLF at the OS boundary) and are capped at 256 KiB in both
+  directions. Both endpoints prime a baseline on the first observation and
+  only sync *changes*, so clipboard contents that predate the session are
+  never transmitted; each side records text it installs to avoid echo loops.
+  The browser side polls `navigator.clipboard.readText()` while focused
+  (requires clipboard permission on a secure context); the client polls the
+  Win32 clipboard once per second during an active session.
 
 ## Frame path (current)
 

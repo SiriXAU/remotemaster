@@ -37,6 +37,38 @@ func TestDecodeEvent(t *testing.T) {
 	}
 }
 
+func TestClipboardRoundTrip(t *testing.T) {
+	for _, text := range []string{"", "hello", "multi\nline\ntext", "unicode: héllo wörld 🎉"} {
+		msg := encodeClipboard(text)
+		if msg[0] != binClipboard {
+			t.Fatalf("message type = %d, want %d", msg[0], binClipboard)
+		}
+		got, ok := decodeClipboard(msg)
+		if !ok || got != text {
+			t.Fatalf("decodeClipboard(encodeClipboard(%q)) = %q, %v", text, got, ok)
+		}
+	}
+}
+
+func TestDecodeClipboardRejects(t *testing.T) {
+	if _, ok := decodeClipboard(nil); ok {
+		t.Fatal("decoded empty message")
+	}
+	if _, ok := decodeClipboard([]byte{binFrame, 'h', 'i'}); ok {
+		t.Fatal("decoded message with wrong tag")
+	}
+	huge := make([]byte, 1+maxClipboardBytes+1)
+	huge[0] = binClipboard
+	if _, ok := decodeClipboard(huge); ok {
+		t.Fatal("decoded oversized clipboard message")
+	}
+	exact := make([]byte, 1+maxClipboardBytes)
+	exact[0] = binClipboard
+	if _, ok := decodeClipboard(exact); !ok {
+		t.Fatal("rejected clipboard message at the size limit")
+	}
+}
+
 func TestVideoConfigRoundTrip(t *testing.T) {
 	desc := []byte{0x01, 0x64, 0x00, 0x1f}
 	raw, err := encodeVideoConfig(2560, 1440, "avc1.64001f", desc)

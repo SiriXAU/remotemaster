@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/sirixau/remotemaster/client/capture"
+	"github.com/sirixau/remotemaster/client/clipboard"
 	"github.com/sirixau/remotemaster/client/input"
 	"github.com/sirixau/remotemaster/client/relay"
 	"github.com/sirixau/remotemaster/client/ui"
@@ -85,6 +86,12 @@ func main() {
 	)
 	client.OnConnFail = func() {
 		ui.SetCode("NOCONN")
+	}
+
+	if clip, err := clipboard.New(); err != nil {
+		log.Printf("clipboard sync unavailable: %v", err)
+	} else {
+		client.Clip = clip
 	}
 
 	// Connect to relay in the background.

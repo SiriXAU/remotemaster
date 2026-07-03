@@ -2,9 +2,12 @@
   const MSG_WEBP_FRAME = 0x01;
   const MSG_VIDEO_CONFIG = 0x08;
   const MSG_VIDEO_CHUNK = 0x09;
+  const MSG_CLIPBOARD = 0x0a;
+  const MAX_CLIPBOARD_BYTES = 256 * 1024;
 
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code') || '';
+  const token = params.get('token') || '';
 
   const canvas = document.getElementById('canvas');
   const ctx = canvas.getContext('2d');
@@ -16,6 +19,7 @@
   const disconnectBtn = document.getElementById('disconnectBtn');
   const viewport = document.getElementById('viewport');
   const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
 
   codeLabel.textContent = 'Code: ' + code;
 
@@ -106,8 +110,50 @@
       case MSG_VIDEO_CHUNK:
         decodeVideoChunk(buffer);
         break;
+      case MSG_CLIPBOARD:
+        receiveClipboard(buffer);
+        break;
     }
   }
+
+  // --- Clipboard sync -------------------------------------------------------
+  // Remote copies arrive as 0x0A messages and are written to the local
+  // clipboard. Local copies are detected by polling readText() while the tab
+  // has focus (the Clipboard API has no change event) and sent as 0x0A.
+  // lastClipboard === null means "not primed yet": the first successful read
+  // only records a baseline, so clipboard contents that predate the session
+  // are never shipped to the remote machine.
+  let lastClipboard = null;
+
+  function receiveClipboard(buffer) {
+    const text = textDecoder.decode(new Uint8Array(buffer, 1));
+    lastClipboard = text;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+  }
+
+  function pollClipboard() {
+    if (!document.hasFocus()) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!navigator.clipboard || !navigator.clipboard.readText) return;
+
+    navigator.clipboard.readText().then((text) => {
+      if (text === lastClipboard) return;
+      const priming = lastClipboard === null;
+      lastClipboard = text;
+      if (priming) return;
+
+      const utf8 = textEncoder.encode(text);
+      if (utf8.length > MAX_CLIPBOARD_BYTES) return;
+      const buf = new Uint8Array(1 + utf8.length);
+      buf[0] = MSG_CLIPBOARD;
+      buf.set(utf8, 1);
+      window._viewer.sendBinary(buf.buffer);
+    }).catch(() => {}); // permission denied or unfocused — try again later
+  }
+
+  setInterval(pollClipboard, 2000);
 
   function enqueueImageFrame(buffer) {
     if (buffer.byteLength < 9) return;
@@ -267,7 +313,8 @@
   function connect() {
     if (dead) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}`);
+    const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+    ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}${tokenParam}`);
     ws.binaryType = 'arraybuffer';
     setStatus('waiting', 'Connecting...');
     showOverlay('Connecting to session...');

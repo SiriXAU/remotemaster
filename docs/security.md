@@ -52,15 +52,20 @@ against and what it deliberately does not.
 - **No transport encryption by default.** Without a TLS-terminating proxy,
   frames and keystrokes are plaintext on the wire. Always deploy behind TLS for
   anything beyond a trusted LAN.
-- **No agent authentication.** Anyone who obtains a live code — by shoulder-surfing,
-  social engineering, or interception on an unencrypted link — can take over.
+- **Agent authentication is optional and shared.** By default anyone who
+  obtains a live code — by shoulder-surfing, social engineering, or
+  interception on an unencrypted link — can take over. Setting `AGENT_TOKEN`
+  requires agents to also present a pre-shared secret (see below), but it is
+  a single shared credential, not per-agent identity.
 - **No end-to-end encryption.** A compromised or malicious relay can observe and
   inject input.
 - **Rate limiting is per source IP and in-memory.** An attacker with many source
   IPs (a botnet) faces weaker limits, and limits are not shared across multiple
   relay instances.
-- **No audit logging or session recording.** The server logs connect/disconnect
-  events only.
+- **No session recording.** Structured audit logging of session lifecycle
+  (who joined which code, when, for how long — enable with `AUDIT_LOG`, see
+  [deployment.md](deployment.md)) is available, but the content of sessions
+  is not recorded.
 - **Single-instance only.** Session state is in process memory.
 
 ## Recommendations for operators
@@ -68,13 +73,21 @@ against and what it deliberately does not.
 1. Always run behind TLS (`docs/deployment.md`), and set `TRUST_PROXY_HEADERS=1`
    only when a proxy you control overwrites the forwarded headers.
 2. Keep sessions short; read codes out of band and start the agent promptly.
-3. Restrict who can reach the agent UI (VPN, IP allowlist, or an auth proxy) if
+3. Set `AGENT_TOKEN` on the relay so a leaked 6-digit code alone is not
+   enough to join. Agents must then open the UI as
+   `https://<host>/?token=<secret>` (the token is passed through to the
+   viewer and the WebSocket join). Failed token checks count against the
+   join rate limiter like bad codes. Caveats: everyone on the support side
+   shares one secret, and since it travels as a query parameter it can land
+   in proxy/access logs — treat it as a second factor for the join endpoint,
+   not a strong identity, and rotate it by restarting the relay.
+4. Restrict who can reach the agent UI (VPN, IP allowlist, or an auth proxy) if
    you need more than code-based gating.
-4. If you fork, re-point the `launch.ps1` download URL at your own release so
+5. If you fork, re-point the `launch.ps1` download URL at your own release so
    clients do not fetch upstream binaries (`docs/deployment.md`).
 
 ## Reporting
 
-There is no formal security contact configured in this repository yet. If you
-find a vulnerability, open a minimal issue asking for a private channel rather
-than posting exploit details publicly.
+See [`SECURITY.md`](../SECURITY.md) at the repository root. In short: use
+GitHub's private vulnerability reporting (Security tab → Report a
+vulnerability) and do not post exploit details in public issues.

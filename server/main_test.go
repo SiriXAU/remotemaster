@@ -69,6 +69,41 @@ func TestClientIPIgnoresForwardedForByDefault(t *testing.T) {
 	}
 }
 
+func TestAgentTokenValid(t *testing.T) {
+	mkReq := func(query string) *http.Request {
+		req, err := http.NewRequest("GET", "http://support.example/ws/agent"+query, nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		return req
+	}
+
+	// No token configured: everything passes.
+	agentToken = ""
+	if !agentTokenValid(mkReq("")) {
+		t.Fatal("request rejected with no token configured")
+	}
+	if !agentTokenValid(mkReq("?token=whatever")) {
+		t.Fatal("stray token rejected with no token configured")
+	}
+
+	// Token configured: only an exact match passes.
+	agentToken = "s3cret"
+	defer func() { agentToken = "" }()
+	if agentTokenValid(mkReq("")) {
+		t.Fatal("missing token accepted")
+	}
+	if agentTokenValid(mkReq("?token=wrong")) {
+		t.Fatal("wrong token accepted")
+	}
+	if agentTokenValid(mkReq("?token=s3cretx")) {
+		t.Fatal("token with matching prefix accepted")
+	}
+	if !agentTokenValid(mkReq("?token=s3cret")) {
+		t.Fatal("correct token rejected")
+	}
+}
+
 func TestIsValidHost(t *testing.T) {
 	tests := map[string]bool{
 		"support.example":      true,
