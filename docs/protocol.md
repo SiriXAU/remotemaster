@@ -65,9 +65,15 @@ Notes:
 - **Button codes**: `0` left, `1` middle, `2` right.
 - **Scroll** `dx`/`dy` are signed line deltas (the viewer divides wheel pixel
   deltas by 40).
-- **Key codes** (`vk`) are Windows virtual-key codes. The browser currently
-  sends `KeyboardEvent.keyCode`, which lines up with VK codes for the common
-  set; see [ROADMAP.md](../ROADMAP.md) for the planned move to a stable mapping.
+- **Key codes** (`vk`) are Windows virtual-key codes. The viewer maps the
+  physical key (`KeyboardEvent.code`) through an explicit table
+  (`CODE_TO_VK` in `control.js`) covering letters, digits, F1–F24, numpad,
+  navigation, modifiers (with left/right distinction), and OEM punctuation,
+  falling back to the legacy `keyCode` only for unmapped keys. The client
+  sets `KEYEVENTF_EXTENDEDKEY` for keys in the extended range
+  (`input.IsExtendedVK`) so e.g. arrow keys are not misread as numpad
+  digits. On tab/canvas blur the viewer releases any held keys to avoid
+  stuck modifiers on the remote machine.
 - **`flags & 0x01`** on a video chunk marks an IDR/key frame. The viewer drops
   delta chunks until it has seen a key frame, and also skips deltas when the
   decoder's `decodeQueueSize` is backing up.
