@@ -5,6 +5,12 @@ ordered by value-to-effort within each. Items reference the code they touch so
 they can be picked up directly. This is a living document — nothing here is a
 commitment, and priorities will shift with real usage.
 
+> **Implementation designs & task index:** the unbuilt items below have
+> detailed, agent-ready designs (wire formats, integration points, tests,
+> acceptance criteria) in [`docs/design/`](docs/design/README.md). Start there
+> to pick up a task — it carries the task registry, protocol-tag registry, and
+> suggested ordering.
+
 ## Streaming & performance
 
 - **H.264 encode on the client** *(in progress, design done)* — The viewer and

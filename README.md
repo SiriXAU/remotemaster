@@ -163,6 +163,8 @@ encrypted if you terminate TLS in front of the relay. Read
 - [`docs/deployment.md`](docs/deployment.md) — production deployment with TLS.
 - [`docs/security.md`](docs/security.md) — threat model and hardening notes.
 - [`docs/h264-streaming.md`](docs/h264-streaming.md) — the planned H.264 path.
+- [`docs/design/`](docs/design/README.md) — implementation designs and the
+  agent-ready task index for unbuilt roadmap features.
 - [`ROADMAP.md`](ROADMAP.md) — planned features and improvements.
 
 ## Roadmap highlights
