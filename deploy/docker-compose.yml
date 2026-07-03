@@ -8,6 +8,12 @@ services:
     restart: unless-stopped
     environment:
       - SERVER_ADDR=:8080
+      # When running behind the nginx TLS proxy below, also set:
+      #   - TRUST_PROXY_HEADERS=1
+      # so the server honors X-Forwarded-Proto/Host/For. This is required for
+      # launch.ps1 to emit wss:// URLs and for the rate limiter to key on the
+      # real client IP. Do NOT set it when port 8080 is exposed directly —
+      # those headers are then client-controlled and unsafe.
     ports:
       - "8080:8080"
     # Uncomment to use nginx TLS termination instead of exposing 8080 directly:

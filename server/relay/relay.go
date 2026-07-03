@@ -12,8 +12,8 @@ import (
 
 // maxMessageBytes is the per-message read limit applied to both sides of the
 // relay. The default nhooyr.io/websocket limit is 32 KiB, which is too small
-// for a single JPEG frame. 10 MiB is enough headroom for a 4K screen at the
-// chosen JPEG quality.
+// for a single WebP frame (or an H.264 access unit). 10 MiB is enough headroom
+// for a 4K screen at the chosen encoder quality.
 const maxMessageBytes = 10 * 1024 * 1024
 
 // Bridge pumps messages bidirectionally between a session's client and agent.
