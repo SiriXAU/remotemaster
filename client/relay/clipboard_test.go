@@ -57,6 +57,6 @@ func TestApplyRemoteClipboardSuppressesEcho(t *testing.T) {
 }
 
 func TestApplyRemoteClipboardNilClipboard(t *testing.T) {
-	c := &Client{} // no clipboard available on this machine
+	c := &Client{}                 // no clipboard available on this machine
 	c.applyRemoteClipboard("text") // must not panic
 }

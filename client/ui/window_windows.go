@@ -15,34 +15,34 @@ var (
 	modUser32 = windows.NewLazyDLL("user32.dll")
 	modGDI32  = windows.NewLazyDLL("gdi32.dll")
 
-	procRegisterClassEx    = modUser32.NewProc("RegisterClassExW")
-	procCreateWindowEx     = modUser32.NewProc("CreateWindowExW")
-	procShowWindow         = modUser32.NewProc("ShowWindow")
-	procUpdateWindow       = modUser32.NewProc("UpdateWindow")
-	procGetMessage         = modUser32.NewProc("GetMessageW")
-	procTranslateMessage   = modUser32.NewProc("TranslateMessage")
-	procDispatchMessage    = modUser32.NewProc("DispatchMessageW")
-	procDefWindowProc      = modUser32.NewProc("DefWindowProcW")
-	procDestroyWindow      = modUser32.NewProc("DestroyWindow")
-	procPostQuitMessage    = modUser32.NewProc("PostQuitMessage")
-	procLoadCursor         = modUser32.NewProc("LoadCursorW")
-	procGetDC              = modUser32.NewProc("GetDC")
-	procReleaseDC          = modUser32.NewProc("ReleaseDC")
-	procBeginPaint         = modUser32.NewProc("BeginPaint")
-	procEndPaint           = modUser32.NewProc("EndPaint")
-	procDrawText           = modUser32.NewProc("DrawTextW")
-	procCreateFont         = modGDI32.NewProc("CreateFontW")
-	procSelectObject       = modGDI32.NewProc("SelectObject")
-	procDeleteObject       = modGDI32.NewProc("DeleteObject")
-	procSetBkMode          = modGDI32.NewProc("SetBkMode")
-	procSetTextColor       = modGDI32.NewProc("SetTextColor")
-	procFillRect           = modUser32.NewProc("FillRect")
-	procCreateSolidBrush   = modGDI32.NewProc("CreateSolidBrush")
-	procGetModuleHandle    = windows.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
-	procSetWindowText      = modUser32.NewProc("SetWindowTextW")
-	procMessageBox         = modUser32.NewProc("MessageBoxW")
-	procGetClientRect      = modUser32.NewProc("GetClientRect")
-	procInvalidateRect     = modUser32.NewProc("InvalidateRect")
+	procRegisterClassEx     = modUser32.NewProc("RegisterClassExW")
+	procCreateWindowEx      = modUser32.NewProc("CreateWindowExW")
+	procShowWindow          = modUser32.NewProc("ShowWindow")
+	procUpdateWindow        = modUser32.NewProc("UpdateWindow")
+	procGetMessage          = modUser32.NewProc("GetMessageW")
+	procTranslateMessage    = modUser32.NewProc("TranslateMessage")
+	procDispatchMessage     = modUser32.NewProc("DispatchMessageW")
+	procDefWindowProc       = modUser32.NewProc("DefWindowProcW")
+	procDestroyWindow       = modUser32.NewProc("DestroyWindow")
+	procPostQuitMessage     = modUser32.NewProc("PostQuitMessage")
+	procLoadCursor          = modUser32.NewProc("LoadCursorW")
+	procGetDC               = modUser32.NewProc("GetDC")
+	procReleaseDC           = modUser32.NewProc("ReleaseDC")
+	procBeginPaint          = modUser32.NewProc("BeginPaint")
+	procEndPaint            = modUser32.NewProc("EndPaint")
+	procDrawText            = modUser32.NewProc("DrawTextW")
+	procCreateFont          = modGDI32.NewProc("CreateFontW")
+	procSelectObject        = modGDI32.NewProc("SelectObject")
+	procDeleteObject        = modGDI32.NewProc("DeleteObject")
+	procSetBkMode           = modGDI32.NewProc("SetBkMode")
+	procSetTextColor        = modGDI32.NewProc("SetTextColor")
+	procFillRect            = modUser32.NewProc("FillRect")
+	procCreateSolidBrush    = modGDI32.NewProc("CreateSolidBrush")
+	procGetModuleHandle     = windows.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
+	procSetWindowText       = modUser32.NewProc("SetWindowTextW")
+	procMessageBox          = modUser32.NewProc("MessageBoxW")
+	procGetClientRect       = modUser32.NewProc("GetClientRect")
+	procInvalidateRect      = modUser32.NewProc("InvalidateRect")
 	procSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
 )
 
@@ -106,14 +106,14 @@ type paintStruct struct {
 }
 
 var (
-	globalCode     string
-	globalHwnd     uintptr
-	globalOnQuit   func()
-	mu             sync.Mutex
-	bgColor        = colorRef(0x17, 0x1a, 0x27)   // dark navy
-	codeColor      = colorRef(0xf1, 0xf5, 0xf9)   // near-white
-	labelColor     = colorRef(0x64, 0x74, 0x8b)   // slate
-	accentColor    = colorRef(0x63, 0x66, 0xf1)   // indigo
+	globalCode   string
+	globalHwnd   uintptr
+	globalOnQuit func()
+	mu           sync.Mutex
+	bgColor      = colorRef(0x17, 0x1a, 0x27) // dark navy
+	codeColor    = colorRef(0xf1, 0xf5, 0xf9) // near-white
+	labelColor   = colorRef(0x64, 0x74, 0x8b) // slate
+	accentColor  = colorRef(0x63, 0x66, 0xf1) // indigo
 )
 
 func colorRef(r, g, b byte) uintptr {
@@ -279,7 +279,7 @@ func Run(code string, onQuit func()) error {
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		wsOverlappedWindow&^0x00040000&^0x00020000, // remove maximize/resize
-		0x80000000, 0x80000000,                      // CW_USEDEFAULT
+		0x80000000, 0x80000000, // CW_USEDEFAULT
 		320, 200,
 		0, 0, hInst, 0,
 	)
