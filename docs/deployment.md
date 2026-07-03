@@ -60,8 +60,14 @@ proxy or load balancer, or long idle screens will be dropped mid-session.
 ## Health checks and monitoring
 
 `GET /health` returns `200` with `{"status":"ok","time":"<RFC3339>"}`. The
-Docker image already wires this into a `HEALTHCHECK`. There are no metrics
-endpoints yet; observability is on the [roadmap](../ROADMAP.md).
+Docker image already wires this into a `HEALTHCHECK`.
+
+`GET /metrics` exposes Prometheus counters and gauges (text exposition
+format, no dependency): pending/active sessions, sessions created and
+joined, join failures and rate-limit blocks, and messages/bytes relayed per
+direction. The endpoint reveals only aggregate numbers, but if you'd rather
+not serve it publicly, block `/metrics` at your reverse proxy and scrape the
+app port directly.
 
 ## Client distribution
 

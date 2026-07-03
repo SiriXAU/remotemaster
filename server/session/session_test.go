@@ -52,6 +52,28 @@ func TestRemoveReturnsRemovedSession(t *testing.T) {
 	}
 }
 
+func TestCountsSplitsPendingAndActive(t *testing.T) {
+	store := NewStore()
+	if p, a := store.Counts(); p != 0 || a != 0 {
+		t.Fatalf("empty store Counts = %d/%d, want 0/0", p, a)
+	}
+
+	first, err := store.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.Create(nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, ok := store.Join(first.Code, nil); !ok {
+		t.Fatal("Join returned false")
+	}
+
+	if p, a := store.Counts(); p != 1 || a != 1 {
+		t.Fatalf("Counts = %d/%d, want 1 pending / 1 active", p, a)
+	}
+}
+
 func TestExpireOnceHonorsConfiguredTTLs(t *testing.T) {
 	store := NewStoreWithTTLs(10*time.Minute, time.Hour)
 

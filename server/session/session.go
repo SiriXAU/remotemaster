@@ -91,6 +91,21 @@ func (s *Store) Join(code string, agent *websocket.Conn) (*Session, bool) {
 	return sess, true
 }
 
+// Counts returns a snapshot of how many sessions are waiting for an agent
+// (pending) and how many have one attached (active).
+func (s *Store) Counts() (pending, active int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, sess := range s.sessions {
+		if sess.JoinedAt.IsZero() {
+			pending++
+		} else {
+			active++
+		}
+	}
+	return pending, active
+}
+
 func (s *Store) Remove(code string) *Session {
 	s.mu.Lock()
 	sess := s.sessions[code]
