@@ -13,7 +13,6 @@ import (
 
 	"nhooyr.io/websocket"
 
-	"github.com/chai2010/webp"
 	"github.com/sirixau/remotemaster/client/capture"
 	"github.com/sirixau/remotemaster/client/clipboard"
 	"github.com/sirixau/remotemaster/client/input"
@@ -327,6 +326,8 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	w, h := c.cap.Bounds()
 	frameHasher := fnv.New64a()
 	var lastHash uint64
+	encoder := newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+	defer encoder.Close()
 
 	for {
 		select {
@@ -362,15 +363,20 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			lastHash = h
 		}
 
-		data, err := webp.EncodeRGBA(img, c.frameQuality)
-		if err != nil || len(data) == 0 {
-			log.Printf("webp encode: %v", err)
+		messages, err := encoder.Encode(img)
+		if err != nil {
+			log.Printf("video encode: %v", err)
+			if _, ok := encoder.(*webpVideoEncoder); !ok {
+				_ = encoder.Close()
+				encoder = newWebPVideoEncoder(w, h, c.frameQuality)
+			}
 			continue
 		}
 
-		frame := encodeFrame(w, h, data)
-		if err := conn.Write(ctx, websocket.MessageBinary, frame); err != nil {
-			return fmt.Errorf("write frame: %w", err)
+		for _, msg := range messages {
+			if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+				return fmt.Errorf("write video: %w", err)
+			}
 		}
 	}
 }

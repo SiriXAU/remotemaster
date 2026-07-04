@@ -77,6 +77,10 @@ Notes:
 - **`flags & 0x01`** on a video chunk marks an IDR/key frame. The viewer drops
   delta chunks until it has seen a key frame, and also skips deltas when the
   decoder's `decodeQueueSize` is backing up.
+- **Encoded video codecs** use WebCodecs codec strings. The client validates
+  outgoing `0x08` configs against the Moonlight-compatible families currently
+  supported by the encoded path: `avc1`/`avc3` (H.264), `hvc1`/`hev1` (HEVC),
+  and `av01` (AV1).
 - **Clipboard** payloads are UTF-8 with `\n` line endings (the Windows client
   converts to/from CRLF at the OS boundary) and are capped at 256 KiB in both
   directions. Both endpoints prime a baseline on the first observation and
@@ -93,11 +97,30 @@ unchanged frames, WebP-encodes changed frames at quality 65, and sends them as
 `0x01` at up to 15 fps. The viewer decodes each frame with `createImageBitmap`
 (falling back to an `<img>` blob) and draws to a `<canvas>`.
 
-## Video path (H.264, staged)
+## Video path (encoded codecs)
 
 The `0x08`/`0x09` messages are the forward-looking codec path. The browser
-already decodes them through WebCodecs (`VideoDecoder` + `EncodedVideoChunk`);
-the Windows client has the encode/decode helpers in `client/relay/proto.go` but
-does not yet produce H.264. The `0x01` WebP path stays as the default and as a
-fallback for browsers without WebCodecs. See
-[`h264-streaming.md`](h264-streaming.md) for the encoder plan.
+already decodes them through WebCodecs (`VideoDecoder` + `EncodedVideoChunk`).
+The Windows client has the encode/decode helpers in `client/relay/proto.go`, a
+Moonlight-compatible codec mask model in `client/relay/codec.go`, and an
+FFmpeg-backed H.264 encoder behind `client/relay/encoder.go`.
+`REMOTEMASTER_VIDEO_CODEC=auto` is the default: it tries H.264 first and falls
+back to the `0x01` WebP path when FFmpeg or the selected encoder is not
+available. Set `REMOTEMASTER_VIDEO_CODEC=webp` to force the legacy path on
+browsers without WebCodecs.
+
+The codec masks mirror `moonlight-common-c` so the eventual encoder can choose
+families and profile features without changing the wire format:
+
+| Mask | Meaning |
+| --- | --- |
+| `0x000F` | H.264 family |
+| `0x0F00` | HEVC family |
+| `0xF000` | AV1 family |
+| `0xAA00` | 10-bit formats |
+| `0xCC04` | YUV 4:4:4 formats |
+
+See [`h264-streaming.md`](h264-streaming.md) for the first encoder plan.
+See [`moonlight-codec-integration.md`](moonlight-codec-integration.md) for the
+Moonlight source review and why the actual encoder/decoder still needs to be
+provided by platform codec APIs.

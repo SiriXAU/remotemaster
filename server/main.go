@@ -103,7 +103,7 @@ func main() {
 }
 
 // launchScriptHandler serves a PowerShell one-liner bootstrap: downloads the
-// latest client EXE from GitHub Releases, writes server.txt, and launches it.
+// latest client EXE and FFmpeg dependency, writes server.txt, and launches it.
 // Usage: irm http://<host>/launch.ps1 | iex
 func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scheme := "ws"
@@ -126,8 +126,22 @@ func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 $dir = Join-Path $env:LOCALAPPDATA 'RemoteMaster'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir 'remotemaster-client.exe'
+$ffmpeg = Join-Path $dir 'ffmpeg.exe'
 Write-Host 'Downloading RemoteMaster client...'
 Invoke-WebRequest -Uri 'https://github.com/sirixau/remotemaster/releases/download/latest/remotemaster-client.exe' -OutFile $exe -UseBasicParsing
+if (-not (Test-Path $ffmpeg)) {
+  $zip = Join-Path $dir 'ffmpeg-release-essentials.zip'
+  $extract = Join-Path $dir 'ffmpeg-download'
+  if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+  Write-Host 'Downloading FFmpeg dependency...'
+  Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
+  Expand-Archive -Path $zip -DestinationPath $extract -Force
+  $found = Get-ChildItem -Path $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+  if ($null -eq $found) { throw 'ffmpeg.exe was not found in the downloaded FFmpeg package' }
+  Copy-Item -Path $found.FullName -Destination $ffmpeg -Force
+  Remove-Item -Force $zip
+  Remove-Item -Recurse -Force $extract
+}
 '%s' | Set-Content -Path (Join-Path $dir 'server.txt') -NoNewline -Encoding UTF8
 Write-Host 'Starting RemoteMaster...'
 Start-Process -FilePath $exe -WorkingDirectory $dir
@@ -162,8 +176,8 @@ func clientHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Disable the per-message read limit immediately after accept. The default
 	// nhooyr.io/websocket limit is 32 KiB and is enforced at frame-receipt time,
-	// before the relay bridge gets a chance to raise it — so a single WebP frame
-	// sent while waiting for the viewer would otherwise close the connection.
+	// before the relay bridge gets a chance to raise it — so a video frame sent
+	// while waiting for the viewer would otherwise close the connection.
 	conn.SetReadLimit(-1)
 
 	sess, err := store.Create(conn)

@@ -82,10 +82,13 @@ implemented — this is a who/when/how-long trail, not a what-happened one.
 ## Client distribution
 
 `/launch.ps1` downloads the client from the repository's rolling `latest` GitHub
-release, which CI updates on every push to `main`. If you fork the project,
-update the download URL in `launchScriptHandler` (`server/main.go`) and the
-release workflow (`.github/workflows/release.yml`) to point at your fork, or the
-one-liner will pull upstream binaries.
+release, which CI updates on every push to `main`. It also downloads the Gyan
+FFmpeg release essentials package when `%LOCALAPPDATA%\RemoteMaster\ffmpeg.exe`
+is missing, extracts `ffmpeg.exe` next to the client, and reuses that local copy
+on later launches. If you fork the project, update the download URLs in
+`launchScriptHandler` (`server/main.go`) and the release workflow
+(`.github/workflows/release.yml`) to point at your fork and chosen FFmpeg source,
+or the one-liner will pull upstream binaries.
 
 ## Session lifecycle limits
 
@@ -119,10 +122,17 @@ Durations use Go syntax: `30s`, `10m`, `8h`.
 
 ### Client (Windows)
 
-| Variable              | Default | Range   | Meaning                        |
-|-----------------------|---------|---------|--------------------------------|
-| `REMOTEMASTER_FPS`    | `15`    | 1–60    | Capture/send frame rate        |
-| `REMOTEMASTER_QUALITY`| `65`    | 1–100   | WebP encode quality per frame  |
+| Variable                           | Default        | Range | Meaning |
+|------------------------------------|----------------|-------|---------|
+| `REMOTEMASTER_FPS`                 | `15`           | 1–60  | Capture/send frame rate |
+| `REMOTEMASTER_QUALITY`             | `65`           | 1–100 | WebP encode quality per frame |
+| `REMOTEMASTER_VIDEO_CODEC`         | `auto`         |       | `auto` tries FFmpeg-backed H.264 first, then falls back to WebP; set `webp` to force the legacy path |
+| `REMOTEMASTER_FFMPEG`              | local `ffmpeg.exe`, then `ffmpeg` on `PATH` |       | Path to the FFmpeg executable used when H.264 is enabled |
+| `REMOTEMASTER_H264_ENCODER`        | `h264_mf` on Windows, `libx264` elsewhere |       | FFmpeg encoder name, for example `h264_mf`, `h264_nvenc`, `h264_qsv`, `h264_amf`, or `libx264` |
+| `REMOTEMASTER_VIDEO_BITRATE_KBPS`  | auto, minimum `6000` | 500–100000 | H.264 target bitrate in kbit/s |
+| `REMOTEMASTER_VIDEO_CODEC_STRING`  | `avc1.42E01F`  |       | WebCodecs codec string sent in the `0x08` video config |
 
 Set these in the environment the client is launched from (out-of-range
 values are clamped). Lower both on constrained links; raise FPS on a LAN.
+The H.264 path falls back to WebP if FFmpeg cannot be started or the encoder
+fails during the session.

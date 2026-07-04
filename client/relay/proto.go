@@ -76,6 +76,9 @@ func encodeVideoConfig(w, h int, codec string, description []byte) ([]byte, erro
 	if len(codecBytes) == 0 || len(codecBytes) > 255 {
 		return nil, fmt.Errorf("codec length must be 1..255 bytes")
 	}
+	if err := validateVideoCodecString(codec); err != nil {
+		return nil, err
+	}
 	if len(description) > 65535 {
 		return nil, fmt.Errorf("video config description too large")
 	}

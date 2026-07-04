@@ -41,11 +41,11 @@ to be controlled, open PowerShell and run:
 irm https://yourdomain.com/launch.ps1 | iex
 ```
 
-This downloads the latest signed-in-time client build to
-`%LOCALAPPDATA%\RemoteMaster`, writes a `server.txt` pointing back at your relay,
-and launches the client. The home page of the relay shows this exact one-liner
-(pre-filled with its own origin) plus a "Download launch.ps1" fallback and a
-direct EXE link.
+This downloads the latest signed-in-time client build and FFmpeg dependency to
+`%LOCALAPPDATA%\RemoteMaster`, writes a `server.txt` pointing back at your
+relay, and launches the client. The home page of the relay shows this exact
+one-liner (pre-filled with its own origin) plus a "Download launch.ps1"
+fallback and a direct EXE link.
 
 Alternatively, build the client yourself (see [Building](#building)) and place a
 `server.txt` containing your relay URL (e.g. `wss://yourdomain.com`) next to the
@@ -71,9 +71,9 @@ EXE.
    attaches the agent to the session, tells both sides, and starts a
    bidirectional byte bridge.
 4. **Streaming.** The client captures the primary screen (GDI `BitBlt`), skips
-   frames identical to the last one (FNV-1a hash of the full frame), encodes
-   changed frames as WebP, and pushes them at up to 15 fps. The browser decodes
-   each frame to a `<canvas>`.
+   frames identical to the last one (FNV-1a hash of the full frame), and tries
+   FFmpeg-backed H.264 first. If FFmpeg or the selected encoder is unavailable,
+   it falls back to WebP frames. The browser decodes each frame to a `<canvas>`.
 5. **Input.** The agent's browser sends mouse/keyboard events as compact binary
    messages; the client injects them with the Win32 `SendInput` API.
 6. **Teardown.** When either side disconnects, the relay closes both connections
@@ -96,7 +96,7 @@ server/          Relay server (Go)
   agent/         Agent web UI (HTML/JS, embedded into the server binary)
 deploy/          Docker Compose, Dockerfile, optional nginx TLS config
 build/           Cross-compile scripts
-docs/            Protocol, deployment, security, and H.264 design notes
+docs/            Protocol, deployment, security, and codec integration notes
 dist/            Build output (gitignored)
 ```
 
@@ -162,15 +162,15 @@ encrypted if you terminate TLS in front of the relay. Read
 - [`docs/protocol.md`](docs/protocol.md) — WebSocket wire protocol reference.
 - [`docs/deployment.md`](docs/deployment.md) — production deployment with TLS.
 - [`docs/security.md`](docs/security.md) — threat model and hardening notes.
-- [`docs/h264-streaming.md`](docs/h264-streaming.md) — the planned H.264 path.
+- [`docs/h264-streaming.md`](docs/h264-streaming.md) — H.264 streaming path.
 - [`docs/design/`](docs/design/README.md) — implementation designs and the
   agent-ready task index for unbuilt roadmap features.
 - [`ROADMAP.md`](ROADMAP.md) — planned features and improvements.
 
 ## Roadmap highlights
 
-The viewer and wire protocol already carry a WebCodecs-ready H.264 message
-format; the next codec step is a Media Foundation encoder on the client. Other
-planned work includes multi-monitor capture, adaptive bitrate, clipboard/file
-transfer, an explicit client consent prompt, and macOS/Linux clients. See
-[`ROADMAP.md`](ROADMAP.md).
+The viewer and wire protocol now carry a WebCodecs-ready H.264 path with WebP
+fallback. Next streaming work includes DXGI capture, tighter hardware encoder
+integration, multi-monitor capture, and adaptive bitrate. Other planned work
+includes file transfer, an explicit client consent prompt, and macOS/Linux
+clients. See [`ROADMAP.md`](ROADMAP.md).

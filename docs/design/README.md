@@ -42,7 +42,7 @@ Task IDs are stable; reference them in branches, commits, and PRs (e.g.
 | RM-STREAM-1 | DXGI Desktop Duplication capture | Streaming | L | — | [streaming-performance](streaming-performance.md#rm-stream-1--dxgi-desktop-duplication-capture) |
 | RM-STREAM-2 | Region / dirty-rect diffing | Streaming | M | — (better with STREAM-1) | [streaming-performance](streaming-performance.md#rm-stream-2--region--dirty-rect-diffing) |
 | RM-STREAM-3 | Adaptive bitrate / FPS | Streaming | M | — | [streaming-performance](streaming-performance.md#rm-stream-3--adaptive-bitrate--fps) |
-| RM-STREAM-4 | H.264 encode on client | Streaming | L | STREAM-1 (ideal) | [h264-streaming](../h264-streaming.md) |
+| RM-STREAM-4 | Native H.264 encoder hardening | Streaming | M | STREAM-1 (ideal) | [h264-streaming](../h264-streaming.md) |
 | RM-CAP-1 | Multi-monitor support | Capabilities | M–L | — | [capabilities](capabilities.md#rm-cap-1--multi-monitor-support) |
 | RM-CAP-2 | File transfer | Capabilities | L | SEC-1 (consent, ideal) | [capabilities](capabilities.md#rm-cap-2--file-transfer) |
 | RM-CAP-3 | Session chat / annotations | Capabilities | S–M | — | [capabilities](capabilities.md#rm-cap-3--session-chat--annotations) |
