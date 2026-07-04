@@ -2,6 +2,8 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -117,6 +119,29 @@ func TestIsValidHost(t *testing.T) {
 	for host, want := range tests {
 		if got := isValidHost(host); got != want {
 			t.Fatalf("isValidHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+func TestLaunchScriptDownloadsFFmpegDependency(t *testing.T) {
+	req := httptest.NewRequest("GET", "https://support.example/launch.ps1", nil)
+	rec := httptest.NewRecorder()
+
+	launchScriptHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"remotemaster-client.exe",
+		"ffmpeg-release-essentials.zip",
+		"ffmpeg.exe",
+		"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+		"wss://support.example",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("launch script missing %q:\n%s", want, body)
 		}
 	}
 }

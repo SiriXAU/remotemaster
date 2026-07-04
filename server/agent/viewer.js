@@ -38,6 +38,7 @@
   let videoDecoder = null;
   let videoConfigured = false;
   let videoWaitingForKey = true;
+  let activeVideoCodec = '';
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -65,6 +66,14 @@
   function markFrameDrawn() {
     setStatus('connected', 'Connected');
     hideOverlay();
+  }
+
+  function codecFamily(codec) {
+    const lower = codec.toLowerCase();
+    if (lower.startsWith('avc1.') || lower.startsWith('avc3.')) return 'H.264';
+    if (lower.startsWith('hvc1.') || lower.startsWith('hev1.')) return 'HEVC';
+    if (lower.startsWith('av01.')) return 'AV1';
+    return '';
   }
 
   function scaleCanvas() {
@@ -213,7 +222,7 @@
 
   function configureVideo(buffer) {
     if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window)) {
-      setStatus('error', 'H.264 is not supported by this browser');
+      setStatus('error', 'Video codec is not supported by this browser');
       return;
     }
     if (buffer.byteLength < 12) return;
@@ -228,6 +237,11 @@
     if (buffer.byteLength < descOffset + descLen) return;
 
     const codec = textDecoder.decode(new Uint8Array(buffer, codecOffset, codecLen));
+    const family = codecFamily(codec);
+    if (!family) {
+      setStatus('error', 'Unsupported video codec');
+      return;
+    }
     const config = {
       codec,
       codedWidth: w,
@@ -244,6 +258,7 @@
     }
     videoConfigured = false;
     videoWaitingForKey = true;
+    activeVideoCodec = codec;
     setRemoteSize(w, h);
 
     videoDecoder = new VideoDecoder({
@@ -259,6 +274,7 @@
         console.error('video decode error', err);
         videoConfigured = false;
         videoWaitingForKey = true;
+        activeVideoCodec = '';
         setStatus('error', 'Video decode error');
       },
     });
@@ -271,13 +287,14 @@
     supportCheck
       .then((result) => {
         if (videoDecoder !== decoder) return;
-        if (!result.supported) throw new Error('unsupported H.264 config');
+        if (!result.supported) throw new Error(`unsupported ${family} config`);
         decoder.configure(result.config);
         videoConfigured = true;
       })
       .catch((err) => {
         console.error('video config error', err);
-        setStatus('error', 'H.264 config error');
+        if (videoDecoder === decoder) activeVideoCodec = '';
+        setStatus('error', `${family} config error`);
       });
   }
 
@@ -306,7 +323,7 @@
     } catch (err) {
       console.error('video chunk error', err);
       videoWaitingForKey = true;
-      setStatus('error', 'Video decode error');
+      setStatus('error', activeVideoCodec ? 'Video decode error' : 'Video codec error');
     }
   }
 
@@ -365,6 +382,7 @@
       }
       videoConfigured = false;
       videoWaitingForKey = true;
+      activeVideoCodec = '';
 
       if (dead) return;
       setStatus('waiting', 'Reconnecting...');
