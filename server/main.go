@@ -122,6 +122,9 @@ func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	serverURL := scheme + "://" + host
 
 	const ps1 = `$ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 redraws the Invoke-WebRequest progress bar for every
+# buffer, slowing downloads by an order of magnitude. Suppress it.
+$ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $dir = Join-Path $env:LOCALAPPDATA 'RemoteMaster'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -146,9 +149,14 @@ if (-not (Test-Path $ffmpeg)) {
     Write-Warning "FFmpeg download failed; continuing without H.264 (WebP fallback): $($_.Exception.Message)"
   }
 }
-'%s' | Set-Content -Path (Join-Path $dir 'server.txt') -NoNewline -Encoding UTF8
+# Write server.txt without a BOM: Windows PowerShell 5.1's Set-Content
+# -Encoding UTF8 prepends a UTF-8 BOM, which corrupts the URL for readers
+# that treat the file as plain bytes.
+[IO.File]::WriteAllText((Join-Path $dir 'server.txt'), '%s')
 Write-Host 'Starting RemoteMaster...'
-Start-Process -FilePath $exe -WorkingDirectory $dir
+# Redirect stderr so Go runtime panics (invisible under -H windowsgui) are
+# preserved for diagnosis alongside client.log.
+Start-Process -FilePath $exe -WorkingDirectory $dir -RedirectStandardError (Join-Path $dir 'client-err.log')
 `
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	fmt.Fprintf(w, ps1, serverURL)

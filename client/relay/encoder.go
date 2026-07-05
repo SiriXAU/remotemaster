@@ -12,7 +12,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/chai2010/webp"
 )
@@ -25,56 +28,287 @@ type wireVideoEncoder interface {
 	Close() error
 }
 
-// packetWaitTimeout bounds how long Encode waits for ffmpeg to emit an
-// encoded packet for the frame just written before returning early.
-const packetWaitTimeout = 750 * time.Millisecond
+// packetWait bounds how long Encode waits for ffmpeg to emit an encoded
+// packet for the frame just written before returning early. Keeping it to
+// roughly one frame interval pipelines capture and encoding: a slow encoder
+// (e.g. software H.264 inside a VM) delays its output to later Encode calls
+// instead of stalling the capture loop on every frame.
+func packetWait(fps int) time.Duration {
+	d := time.Second / time.Duration(max(fps, 1))
+	if d < 33*time.Millisecond {
+		d = 33 * time.Millisecond
+	}
+	if d > 250*time.Millisecond {
+		d = 250 * time.Millisecond
+	}
+	return d
+}
 
 type webpVideoEncoder struct {
-	w, h    int
-	quality float32
+	w, h int
+
+	// Adaptive quality: q floats between webpMinQuality and qualityCap so
+	// encode time stays inside the per-frame budget (1/fps). Small dirty
+	// regions encode in a millisecond or two, letting q climb back to the
+	// cap; full-screen motion (window drags, video) pulls q down instead of
+	// dropping the frame rate.
+	q          float32
+	qualityCap float32
+	budget     time.Duration
+
+	// prev holds the previously encoded frame's pixels so Encode can diff
+	// against it and re-encode only the changed region. A full-screen WebP
+	// encode costs hundreds of milliseconds at desktop resolutions, which
+	// caps the stream at a few fps; typical desktop activity (typing, cursor
+	// movement, small UI updates) touches a tiny fraction of the screen.
+	prev     []byte
+	lastFull time.Time
 }
+
+// webpMinQuality is the floor for adaptive quality — below this, artifacts
+// on text get bad enough that a lower frame rate is the better trade.
+const webpMinQuality = 30
+
+// webpFullRefreshInterval bounds how stale the viewer's canvas can get if a
+// region update is ever lost or mis-drawn. The refresh is normally sent on
+// an idle tick (screen unchanged) where its full-frame encode cost is
+// invisible; webpFullRefreshMaxInterval forces one even during continuous
+// activity.
+const (
+	webpFullRefreshInterval    = 10 * time.Second
+	webpFullRefreshMaxInterval = 30 * time.Second
+)
+
+// webpTileRows is the strip height at which a dirty region is split for
+// parallel encoding. Regions shorter than this encode as a single strip.
+const webpTileRows = 200
 
 func newWireVideoEncoder(w, h, fps int, quality float32) wireVideoEncoder {
 	rawMode := os.Getenv("REMOTEMASTER_VIDEO_CODEC")
 	mode := strings.ToLower(strings.TrimSpace(rawMode))
-	explicitH264 := mode == "h264" || mode == "ffmpeg-h264"
 	switch mode {
-	case "", "auto", "h264", "ffmpeg-h264":
+	case "h264", "ffmpeg-h264":
 		encoder, err := newFFmpegH264Encoder(w, h, fps)
 		if err == nil {
 			log.Printf("video encoder: h264 via ffmpeg")
 			return encoder
 		}
-		if explicitH264 {
-			log.Printf("video encoder: REMOTEMASTER_VIDEO_CODEC=%q was explicitly requested but ffmpeg h264 setup failed (%v); falling back to webp", rawMode, err)
-		} else {
-			log.Printf("video encoder: h264 unavailable (%v); falling back to webp", err)
-		}
-		// The fallback reason was already logged above with full context —
-		// avoid a second, generic "video encoder: webp" log for the same
-		// event.
-		return &webpVideoEncoder{w: w, h: h, quality: quality}
-	case "webp":
+		log.Printf("video encoder: REMOTEMASTER_VIDEO_CODEC=%q was explicitly requested but ffmpeg h264 setup failed (%v); falling back to webp", rawMode, err)
+	case "", "auto", "webp":
+		// Dirty-region WebP is the default: for desktop content it beats
+		// H.264 on latency and text sharpness, and adaptive quality keeps
+		// the frame rate up during full-screen motion. H.264 remains the
+		// bandwidth-efficient opt-in for slow links (REMOTEMASTER_VIDEO_CODEC=h264).
 	default:
 		log.Printf("video encoder: unsupported REMOTEMASTER_VIDEO_CODEC=%q; falling back to webp", rawMode)
 	}
-	return newWebPVideoEncoder(w, h, quality)
+	return newWebPVideoEncoder(w, h, fps, quality)
 }
 
-func newWebPVideoEncoder(w, h int, quality float32) wireVideoEncoder {
-	log.Printf("video encoder: webp")
-	return &webpVideoEncoder{w: w, h: h, quality: quality}
+func newWebPVideoEncoder(w, h, fps int, quality float32) wireVideoEncoder {
+	log.Printf("video encoder: webp (dirty regions, adaptive quality, %d fps budget)", fps)
+	return &webpVideoEncoder{
+		w:          w,
+		h:          h,
+		q:          quality,
+		qualityCap: quality,
+		budget:     time.Second / time.Duration(max(fps, 1)),
+	}
 }
 
 func (e *webpVideoEncoder) Encode(img image.Image) ([][]byte, error) {
-	data, err := webp.EncodeRGBA(img, e.quality)
+	nrgba, ok := img.(*image.NRGBA)
+	if !ok || nrgba.Stride != e.w*4 || nrgba.Rect.Dx() != e.w || nrgba.Rect.Dy() != e.h {
+		// Unknown layout — encode the whole image without diffing.
+		return e.encodeFull(img, nil)
+	}
+
+	if e.prev == nil || time.Since(e.lastFull) >= webpFullRefreshMaxInterval {
+		return e.encodeFull(img, nrgba.Pix)
+	}
+
+	x0, y0, x1, y1 := diffBounds(e.prev, nrgba.Pix, e.w, e.h)
+	if x0 > x1 {
+		return nil, nil // identical frames — nothing to send
+	}
+	rw, rh := x1-x0+1, y1-y0+1
+
+	// Copy the dirty rows into prev so the next diff is against what the
+	// viewer now shows.
+	for y := y0; y <= y1; y++ {
+		row := y * e.w * 4
+		copy(e.prev[row+x0*4:row+(x1+1)*4], nrgba.Pix[row+x0*4:row+(x1+1)*4])
+	}
+
+	// Large regions are split into horizontal strips encoded in parallel:
+	// WebP encoding is single-threaded, so a full-screen change would
+	// otherwise serialize ~70ms+ on one core while the others idle. The
+	// strips are disjoint, so the viewer can draw them in any order.
+	strips := rh / webpTileRows
+	if strips < 1 {
+		strips = 1
+	}
+	if maxW := runtime.GOMAXPROCS(0); strips > maxW {
+		strips = maxW
+	}
+	if strips > 8 {
+		strips = 8
+	}
+
+	start := time.Now()
+	type stripResult struct {
+		msg []byte
+		err error
+	}
+	results := make([]stripResult, strips)
+	var wg sync.WaitGroup
+	rowsPer := (rh + strips - 1) / strips
+	for i := 0; i < strips; i++ {
+		sy := y0 + i*rowsPer
+		sh := rowsPer
+		if sy+sh > y1+1 {
+			sh = y1 + 1 - sy
+		}
+		if sh <= 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(i, sy, sh int) {
+			defer wg.Done()
+			crop := image.NewNRGBA(image.Rect(0, 0, rw, sh))
+			for y := 0; y < sh; y++ {
+				srcRow := (sy+y)*e.w*4 + x0*4
+				copy(crop.Pix[y*crop.Stride:y*crop.Stride+rw*4], nrgba.Pix[srcRow:srcRow+rw*4])
+			}
+			data, err := webp.EncodeRGBA(crop, e.q)
+			if err == nil && len(data) == 0 {
+				err = fmt.Errorf("empty strip")
+			}
+			if err != nil {
+				results[i].err = err
+				return
+			}
+			results[i].msg = encodeRegionFrame(x0, sy, rw, sh, data)
+		}(i, sy, sh)
+	}
+	wg.Wait()
+	e.adapt(time.Since(start))
+
+	var messages [][]byte
+	for _, r := range results {
+		if r.err != nil {
+			return nil, fmt.Errorf("webp region encode: %w", r.err)
+		}
+		if r.msg != nil {
+			messages = append(messages, r.msg)
+		}
+	}
+	return messages, nil
+}
+
+// adapt is the quality feedback loop: each encode's duration nudges q so the
+// encode cost converges under the per-frame budget. Down-steps are larger
+// than up-steps so a burst of full-screen motion sheds quality quickly and
+// recovers it gradually once the workload lightens.
+func (e *webpVideoEncoder) adapt(d time.Duration) {
+	switch {
+	case d > e.budget*8/10:
+		e.q -= 8
+		if e.q < webpMinQuality {
+			e.q = webpMinQuality
+		}
+	case d < e.budget*4/10 && e.q < e.qualityCap:
+		e.q += 4
+		if e.q > e.qualityCap {
+			e.q = e.qualityCap
+		}
+	}
+}
+
+// encodeFull sends the whole frame and, when pix is the frame's raw pixels,
+// snapshots it for subsequent region diffs.
+func (e *webpVideoEncoder) encodeFull(img image.Image, pix []byte) ([][]byte, error) {
+	start := time.Now()
+	data, err := webp.EncodeRGBA(img, e.q)
+	e.adapt(time.Since(start))
 	if err != nil {
 		return nil, fmt.Errorf("webp encode: %w", err)
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("webp encode: empty frame")
 	}
+	if pix != nil {
+		if e.prev == nil {
+			e.prev = make([]byte, len(pix))
+		}
+		copy(e.prev, pix)
+		e.lastFull = time.Now()
+	} else {
+		e.prev = nil
+	}
 	return [][]byte{encodeFrame(e.w, e.h, data)}, nil
+}
+
+// diffBounds returns the bounding box (inclusive) of pixels that differ
+// between two same-layout RGBA buffers, or x0>x1 when they are identical.
+func diffBounds(prev, cur []byte, w, h int) (x0, y0, x1, y1 int) {
+	x0, y0 = w, h
+	x1, y1 = -1, -1
+	stride := w * 4
+	for y := 0; y < h; y++ {
+		row := y * stride
+		if bytes.Equal(prev[row:row+stride], cur[row:row+stride]) {
+			continue
+		}
+		if y0 == h {
+			y0 = y
+		}
+		y1 = y
+		// Tighten the horizontal bounds. Only the spans outside the current
+		// box need scanning, so the per-row cost shrinks as the box grows.
+		for x := 0; x < x0; x++ {
+			o := row + x*4
+			if *(*uint32)(unsafe.Pointer(&prev[o])) != *(*uint32)(unsafe.Pointer(&cur[o])) {
+				x0 = x
+				break
+			}
+		}
+		for x := w - 1; x > x1; x-- {
+			o := row + x*4
+			if *(*uint32)(unsafe.Pointer(&prev[o])) != *(*uint32)(unsafe.Pointer(&cur[o])) {
+				x1 = x
+				break
+			}
+		}
+	}
+	if y1 < 0 {
+		return 1, 1, 0, 0
+	}
+	return x0, y0, x1, y1
+}
+
+// CurrentQuality exposes the adaptive quality level for stats logging.
+func (e *webpVideoEncoder) CurrentQuality() float32 { return e.q }
+
+// DrainPackets runs on ticks where the screen didn't change. That idle
+// moment is the cheap place to send the periodic full refresh: the encode
+// cost stutters nothing because no motion is on screen, and it repaints at
+// the quality cap (idle encodes have long since restored q) so the desktop
+// sharpens right after activity stops.
+func (e *webpVideoEncoder) DrainPackets() [][]byte {
+	if e.prev == nil || time.Since(e.lastFull) < webpFullRefreshInterval {
+		return nil
+	}
+	img := &image.NRGBA{
+		Pix:    e.prev,
+		Stride: e.w * 4,
+		Rect:   image.Rect(0, 0, e.w, e.h),
+	}
+	msgs, err := e.encodeFull(img, e.prev)
+	if err != nil {
+		return nil
+	}
+	return msgs
 }
 
 func (e *webpVideoEncoder) Close() error {
@@ -96,7 +330,39 @@ type ffmpegH264Encoder struct {
 	sentCfg     bool
 	timestamp   uint64
 	duration    uint32
+	wait        time.Duration
 	packetTimer *time.Timer
+
+	// framesIn/packetsOut track pipeline depth: how many frames are inside
+	// ffmpeg (and the AU parser) awaiting output. Sampled by the capture
+	// loop's stats logging to attribute perceived latency.
+	framesIn   atomic.Int64
+	packetsOut atomic.Int64
+}
+
+// PipelineDepth reports how many written frames have not yet produced an
+// encoded access unit.
+func (e *ffmpegH264Encoder) PipelineDepth() int64 {
+	return e.framesIn.Load() - e.packetsOut.Load()
+}
+
+// DrainPackets returns any encoded access units that are already waiting,
+// without blocking. The capture loop calls this on ticks where the frame was
+// skipped (unchanged screen), so output from a slow or pipelined encoder is
+// still delivered promptly instead of sitting until the next screen change.
+func (e *ffmpegH264Encoder) DrainPackets() [][]byte {
+	var messages [][]byte
+	for {
+		select {
+		case packet, ok := <-e.packetCh:
+			if !ok {
+				return messages
+			}
+			messages = append(messages, e.encodePacket(packet))
+		default:
+			return messages
+		}
+	}
 }
 
 func newFFmpegH264Encoder(w, h, fps int) (*ffmpegH264Encoder, error) {
@@ -151,6 +417,7 @@ func newFFmpegH264Encoder(w, h, fps int) (*ffmpegH264Encoder, error) {
 		cmd:      cmd,
 		stdin:    stdin,
 		packetCh: make(chan h264AccessUnit, fps*2),
+		wait:     packetWait(fps),
 		errCh:    make(chan error, 1),
 		duration: uint32(1000000 / max(fps, 1)),
 	}
@@ -199,13 +466,23 @@ func ffmpegH264Args(w, h, fps int, encoderName string, bitrateKbps int) []string
 		"-r", strconv.Itoa(fps),
 		"-i", "pipe:0",
 		"-an",
+	}
+
+	// H.264 4:2:0 needs even dimensions; encoders like h264_mf hard-reject
+	// odd sizes (MF_E_INVALIDMEDIATYPE). Screens can be odd-sized — VMs and
+	// scaled displays especially — so shave at most one pixel per axis.
+	if cw, ch := w&^1, h&^1; cw != w || ch != h {
+		args = append(args, "-vf", fmt.Sprintf("crop=%d:%d:0:0", cw, ch))
+	}
+
+	args = append(args,
 		"-c:v", encoderName,
 		"-bf", "0",
 		"-g", strconv.Itoa(max(fps*2, 1)),
 		"-b:v", bitrate,
 		"-maxrate", bitrate,
 		"-bufsize", bitrate,
-	}
+	)
 
 	if encoderName == "libx264" {
 		args = append(args,
@@ -215,6 +492,15 @@ func ffmpegH264Args(w, h, fps int, encoderName string, bitrateKbps int) []string
 			"-pix_fmt", "yuv420p",
 			"-x264-params", "scenecut=0:repeat-headers=1:aud=1",
 		)
+	}
+	if strings.HasSuffix(encoderName, "_mf") {
+		// Media Foundation buffers several frames by default; the
+		// display_remoting scenario is MF's low-latency mode for exactly
+		// this workload. Note: the MF encoders register no named -profile
+		// constants (passing one aborts ffmpeg at startup) and already
+		// default to H.264 Base profile, which signals no-reorder to
+		// decoders like Safari's VideoToolbox.
+		args = append(args, "-scenario", "display_remoting")
 	}
 
 	args = append(args,
@@ -238,7 +524,11 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 
 	messages := make([][]byte, 0, 2)
 	if !e.sentCfg {
-		cfg, err := encodeVideoConfig(e.w, e.h, e.codec, nil)
+		// Advertise the encoder's coded size: odd screen dimensions are
+		// cropped down to even by the ffmpeg filter graph (see
+		// ffmpegH264Args), so the stream is up to one pixel smaller than
+		// the capture on each axis.
+		cfg, err := encodeVideoConfig(e.w&^1, e.h&^1, e.codec, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -249,9 +539,10 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 	if err := e.writeFrame(nrgba); err != nil {
 		return nil, err
 	}
+	e.framesIn.Add(1)
 
 	if e.packetTimer == nil {
-		e.packetTimer = time.NewTimer(packetWaitTimeout)
+		e.packetTimer = time.NewTimer(e.wait)
 	} else {
 		// Reuse the timer instead of allocating a new one per frame. Per the
 		// time.Timer docs, Reset must only be called on a stopped or expired
@@ -262,13 +553,21 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 			default:
 			}
 		}
-		e.packetTimer.Reset(packetWaitTimeout)
+		e.packetTimer.Reset(e.wait)
 	}
 
 	select {
 	case packet, ok := <-e.packetCh:
 		if !ok {
-			return nil, fmt.Errorf("h264 encoder stopped")
+			// The parser goroutine closed the channel: ffmpeg exited. Its
+			// stderr is captured on a separate goroutine that may still be
+			// reading, so give it a moment rather than losing the reason.
+			select {
+			case err := <-e.errCh:
+				return nil, fmt.Errorf("h264 encoder stopped: %w", err)
+			case <-time.After(time.Second):
+				return nil, fmt.Errorf("h264 encoder stopped")
+			}
 		}
 		messages = append(messages, e.encodePacket(packet))
 	case err := <-e.errCh:
@@ -330,6 +629,7 @@ func (e *ffmpegH264Encoder) writeFrame(img *image.NRGBA) error {
 }
 
 func (e *ffmpegH264Encoder) encodePacket(packet h264AccessUnit) []byte {
+	e.packetsOut.Add(1)
 	msg := encodeVideoChunk(e.timestamp, e.duration, packet.keyFrame, packet.data)
 	e.timestamp += uint64(e.duration)
 	return msg

@@ -3,6 +3,8 @@
   const MSG_VIDEO_CONFIG = 0x08;
   const MSG_VIDEO_CHUNK = 0x09;
   const MSG_CLIPBOARD = 0x0a;
+  const MSG_VIDEO_UNSUPPORTED = 0x0b;
+  const MSG_WEBP_REGION = 0x0c;
   const MAX_CLIPBOARD_BYTES = 256 * 1024;
 
   const params = new URLSearchParams(window.location.search);
@@ -33,7 +35,8 @@
   let reconnectDelay = 1000;
   let dead = false;
 
-  let pendingImageFrame = null;
+  let imageQueue = [];
+  let discardRegionsUntilFull = false;
   let imageDecoding = false;
   let videoDecoder = null;
   let videoConfigured = false;
@@ -131,6 +134,9 @@
       case MSG_WEBP_FRAME:
         enqueueImageFrame(buffer);
         break;
+      case MSG_WEBP_REGION:
+        enqueueRegionFrame(buffer);
+        break;
       case MSG_VIDEO_CONFIG:
         configureVideo(buffer);
         break;
@@ -185,31 +191,68 @@
   function enqueueImageFrame(buffer) {
     if (buffer.byteLength < 9) return;
     const dv = new DataView(buffer);
-    pendingImageFrame = {
+    // A full frame supersedes everything queued before it — dropping stale
+    // full frames and any older region deltas is safe because the new frame
+    // repaints the entire canvas.
+    imageQueue.length = 0;
+    imageQueue.push({
+      full: true,
       w: dv.getUint32(1),
       h: dv.getUint32(5),
       data: buffer.slice(9),
-    };
+    });
+    discardRegionsUntilFull = false;
+    if (!imageDecoding) decodeNextImageFrame();
+  }
+
+  function enqueueRegionFrame(buffer) {
+    if (buffer.byteLength < 17) return;
+    // Region deltas cannot be dropped individually — each one patches the
+    // canvas, so skipping one leaves a stale rectangle until the client's
+    // next periodic full refresh. If decode falls impossibly far behind,
+    // drop the whole backlog and wait for that refresh instead.
+    if (discardRegionsUntilFull) return;
+    if (imageQueue.length > 120) {
+      imageQueue.length = 0;
+      discardRegionsUntilFull = true;
+      return;
+    }
+    const dv = new DataView(buffer);
+    imageQueue.push({
+      full: false,
+      x: dv.getUint32(1),
+      y: dv.getUint32(5),
+      w: dv.getUint32(9),
+      h: dv.getUint32(13),
+      data: buffer.slice(17),
+    });
     if (!imageDecoding) decodeNextImageFrame();
   }
 
   function decodeNextImageFrame() {
-    const frame = pendingImageFrame;
+    const frame = imageQueue.shift();
     if (!frame) return;
 
-    pendingImageFrame = null;
     imageDecoding = true;
+
+    const drawFrame = (source) => {
+      if (frame.full) {
+        setRemoteSize(frame.w, frame.h);
+        ctx.drawImage(source, 0, 0);
+      } else {
+        ctx.drawImage(source, frame.x, frame.y);
+      }
+      markFrameDrawn();
+      imageDecoding = false;
+      if (imageQueue.length) decodeNextImageFrame();
+    };
 
     const blob = new Blob([frame.data], { type: 'image/webp' });
     if (window.createImageBitmap) {
       createImageBitmap(blob)
         .then((bitmap) => {
-          setRemoteSize(frame.w, frame.h);
-          ctx.drawImage(bitmap, 0, 0);
+          drawFrame(bitmap);
           bitmap.close();
-          markFrameDrawn();
-          imageDecoding = false;
-          if (pendingImageFrame) decodeNextImageFrame();
         })
         .catch(onImageDecodeError);
       return;
@@ -219,11 +262,7 @@
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      setRemoteSize(frame.w, frame.h);
-      ctx.drawImage(img, 0, 0);
-      markFrameDrawn();
-      imageDecoding = false;
-      if (pendingImageFrame) decodeNextImageFrame();
+      drawFrame(img);
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -235,12 +274,25 @@
   function onImageDecodeError() {
     imageDecoding = false;
     setStatus('error', 'Frame decode error');
-    if (pendingImageFrame) decodeNextImageFrame();
+    if (imageQueue.length) decodeNextImageFrame();
+  }
+
+  // Tells the client this browser cannot decode the advertised video codec,
+  // so it should switch to WebP frames. Sent at most once per connection.
+  let videoUnsupportedSent = false;
+  function requestWebPFallback(reason) {
+    console.warn('video codec unsupported, requesting WebP fallback:', reason);
+    setStatus('waiting', 'Video codec unsupported here; switching to WebP...');
+    if (videoUnsupportedSent) return;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new Uint8Array([MSG_VIDEO_UNSUPPORTED]));
+      videoUnsupportedSent = true;
+    }
   }
 
   function configureVideo(buffer) {
     if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window)) {
-      setStatus('error', 'Video codec is not supported by this browser');
+      requestWebPFallback('WebCodecs is not available in this browser');
       return;
     }
     if (buffer.byteLength < 12) return;
@@ -257,7 +309,7 @@
     const codec = textDecoder.decode(new Uint8Array(buffer, codecOffset, codecLen));
     const family = codecFamily(codec);
     if (!family) {
-      setStatus('error', 'Unsupported video codec');
+      requestWebPFallback(`unrecognized codec string ${codec}`);
       return;
     }
     const config = {
@@ -314,7 +366,7 @@
       .catch((err) => {
         console.error('video config error', err);
         if (videoDecoder === decoder) activeVideoCodec = '';
-        setStatus('error', `${family} config error`);
+        requestWebPFallback(`${family} config rejected: ${err}`);
       });
   }
 
@@ -419,6 +471,9 @@
       videoConfigured = false;
       videoWaitingForKey = true;
       activeVideoCodec = '';
+      videoUnsupportedSent = false;
+      imageQueue.length = 0;
+      discardRegionsUntilFull = false;
 
       if (dead) return;
       setStatus('waiting', 'Reconnecting...');

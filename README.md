@@ -73,10 +73,13 @@ troubleshooting — see the [usage guide](docs/usage.md).
 3. **Agent connects** to `/ws/agent?code=XXXXXX`. The server validates the code,
    attaches the agent to the session, tells both sides, and starts a
    bidirectional byte bridge.
-4. **Streaming.** The client captures the primary screen (GDI `BitBlt`), skips
-   frames identical to the last one (FNV-1a hash of the full frame), and tries
-   FFmpeg-backed H.264 first. If FFmpeg or the selected encoder is unavailable,
-   it falls back to WebP frames. The browser decodes each frame to a `<canvas>`.
+4. **Streaming.** The client captures the primary screen (GDI `BitBlt`, with
+   the mouse cursor composited in), skips frames identical to the last one
+   (FNV-1a hash of the full frame), and streams dirty-region WebP: only the
+   changed rectangle is re-encoded, in parallel strips when large, with
+   quality adapting to hold the target frame rate. FFmpeg-backed H.264 is
+   available as a low-bandwidth opt-in (`REMOTEMASTER_VIDEO_CODEC=h264`).
+   The browser decodes each frame to a `<canvas>`.
 5. **Input.** The agent's browser sends mouse/keyboard events as compact binary
    messages; the client injects them with the Win32 `SendInput` API.
 6. **Teardown.** When either side disconnects, the relay closes both connections
@@ -147,13 +150,13 @@ Video behavior is tunable via environment variables read at client startup:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto` tries H.264 then WebP; `h264` requests H.264 explicitly; `webp` skips FFmpeg entirely. |
+| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto`/`webp` = dirty-region WebP (default); `h264` = FFmpeg H.264 for slow links. |
 | `REMOTEMASTER_FFMPEG` | auto-detect | Path to `ffmpeg.exe` (default: next to the EXE, then `PATH`). |
 | `REMOTEMASTER_H264_ENCODER` | `h264_mf` (Windows) | FFmpeg encoder: `libx264`, `h264_nvenc`, `h264_qsv`, `h264_amf`, ... |
 | `REMOTEMASTER_VIDEO_BITRATE_KBPS` | auto (min 6000) | Target bitrate, clamped to 500–100000. |
 | `REMOTEMASTER_VIDEO_CODEC_STRING` | `avc1.42E01F` | WebCodecs codec string sent to the viewer. |
-| `REMOTEMASTER_FPS` | `15` | Capture frame rate (1–60). |
-| `REMOTEMASTER_QUALITY` | `65` | WebP fallback quality (1–100). |
+| `REMOTEMASTER_FPS` | `25` | Capture frame rate (1–60). |
+| `REMOTEMASTER_QUALITY` | `65` | WebP quality cap (1–100); adapts down under load. |
 
 See the [usage guide](docs/usage.md) for recipes and troubleshooting.
 

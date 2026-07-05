@@ -19,6 +19,14 @@ const (
 	binVideoConfig = 0x08
 	binVideoChunk  = 0x09
 	binClipboard   = 0x0A
+	// binVideoUnsupported is sent by the viewer when it cannot decode the
+	// advertised video codec (e.g. no WebCodecs support); the client responds
+	// by switching to WebP frames for the rest of the session.
+	binVideoUnsupported = 0x0B
+	// binRegionFrame carries a WebP-encoded sub-rectangle of the screen:
+	// [type:1][x:u32][y:u32][w:u32][h:u32][webp]. The viewer draws it at
+	// (x,y) on top of the last full binFrame.
+	binRegionFrame = 0x0C
 )
 
 // maxClipboardBytes caps clipboard payloads in both directions so a huge
@@ -39,6 +47,17 @@ func encodeFrame(w, h int, data []byte) []byte {
 	binary.BigEndian.PutUint32(buf[1:5], uint32(w))
 	binary.BigEndian.PutUint32(buf[5:9], uint32(h))
 	copy(buf[9:], data)
+	return buf
+}
+
+func encodeRegionFrame(x, y, w, h int, data []byte) []byte {
+	buf := make([]byte, 17+len(data))
+	buf[0] = binRegionFrame
+	binary.BigEndian.PutUint32(buf[1:5], uint32(x))
+	binary.BigEndian.PutUint32(buf[5:9], uint32(y))
+	binary.BigEndian.PutUint32(buf[9:13], uint32(w))
+	binary.BigEndian.PutUint32(buf[13:17], uint32(h))
+	copy(buf[17:], data)
 	return buf
 }
 

@@ -56,6 +56,8 @@ Byte 0 is the type tag.
 | `0x08` | video config | client → agent | `[type:1][codecLen:1][w:u32][h:u32][descLen:u16][codec][description]` |
 | `0x09` | video chunk | client → agent | `[type:1][flags:1][timestamp:u64][duration:u32][payload]` |
 | `0x0A` | clipboard text | both | `[type:1][utf8 bytes]` |
+| `0x0B` | video unsupported | agent → client | `[type:1]` |
+| `0x0C` | WebP region | client → agent | `[type:1][x:u32][y:u32][w:u32][h:u32][webp bytes]` |
 
 Notes:
 
@@ -81,6 +83,15 @@ Notes:
   outgoing `0x08` configs against the Moonlight-compatible families currently
   supported by the encoded path: `avc1`/`avc3` (H.264), `hvc1`/`hev1` (HEVC),
   and `av01` (AV1).
+- **Video unsupported** (`0x0B`) is sent by the viewer when it cannot decode
+  the advertised codec (no WebCodecs, unrecognized codec string, or a rejected
+  decoder config). The client responds by switching to the WebP frame path
+  for the rest of the session; the flag resets when a new agent connects.
+- **WebP regions** (`0x0C`) patch a sub-rectangle of the last full `0x01`
+  frame at `(x, y)`. Unlike full frames they must not be skipped by the
+  viewer — each one is a delta against the current canvas. The client sends
+  a fresh full frame at least every 30 s (and opportunistically ~10 s, on an
+  idle tick) as self-healing.
 - **Clipboard** payloads are UTF-8 with `\n` line endings (the Windows client
   converts to/from CRLF at the OS boundary) and are capped at 256 KiB in both
   directions. Both endpoints prime a baseline on the first observation and
@@ -90,24 +101,30 @@ Notes:
   (requires clipboard permission on a secure context); the client polls the
   Win32 clipboard once per second during an active session.
 
-## Frame path (current)
+## Frame path (default: dirty-region WebP)
 
-The client captures the primary display, hashes the raw pixels (FNV-1a) to skip
-unchanged frames, WebP-encodes changed frames at quality 65, and sends them as
-`0x01` at up to 15 fps. The viewer decodes each frame with `createImageBitmap`
-(falling back to an `<img>` blob) and draws to a `<canvas>`.
+The client captures the primary display (compositing the mouse cursor into
+the frame), hashes the raw pixels (FNV-1a) to skip unchanged frames, and
+diffs each changed frame against the previous one to find the dirty bounding
+box. Small changes go out as `0x0C` region patches; large regions are split
+into horizontal strips and encoded in parallel. WebP quality adapts each
+frame (floor 30, cap `REMOTEMASTER_QUALITY`) so encode time stays inside the
+per-frame budget at the target rate (default 25 fps), and a full `0x01`
+frame is re-sent periodically as self-healing. The viewer decodes with
+`createImageBitmap` (falling back to an `<img>` blob) and draws to a
+`<canvas>`; region patches are queued and never dropped.
 
-## Video path (encoded codecs)
+## Video path (encoded codecs, opt-in)
 
-The `0x08`/`0x09` messages are the forward-looking codec path. The browser
-already decodes them through WebCodecs (`VideoDecoder` + `EncodedVideoChunk`).
-The Windows client has the encode/decode helpers in `client/relay/proto.go`, a
-Moonlight-compatible codec mask model in `client/relay/codec.go`, and an
-FFmpeg-backed H.264 encoder behind `client/relay/encoder.go`.
-`REMOTEMASTER_VIDEO_CODEC=auto` is the default: it tries H.264 first and falls
-back to the `0x01` WebP path when FFmpeg or the selected encoder is not
-available. Set `REMOTEMASTER_VIDEO_CODEC=webp` to force the legacy path on
-browsers without WebCodecs.
+The `0x08`/`0x09` messages are the bandwidth-efficient codec path for slow
+links, enabled with `REMOTEMASTER_VIDEO_CODEC=h264`. The browser decodes
+them through WebCodecs (`VideoDecoder` + `EncodedVideoChunk`); the Windows
+client drives an FFmpeg-backed H.264 encoder (`client/relay/encoder.go`,
+helpers in `proto.go`/`codec.go`), preferring Media Foundation's `h264_mf`
+with the low-latency `display_remoting` scenario and cropping odd screen
+dimensions to even (a 4:2:0 requirement). If the encoder fails to start, or
+the viewer reports `0x0B`, the client falls back to the WebP path
+automatically.
 
 The codec masks mirror `moonlight-common-c` so the eventual encoder can choose
 families and profile features without changing the wire format:

@@ -57,11 +57,18 @@ viewer is resyncing at the next keyframe on its own; no action needed.
 
 ## 3. Video codec: what happens by default
 
-Out of the box the client tries **H.264 via FFmpeg** (hardware-accelerated
-`h264_mf` on Windows) and transparently falls back to **WebP** frames if
-FFmpeg is missing or the encoder fails to start. Display-resolution changes
-mid-session are handled automatically — the encoder is rebuilt at the new
-size.
+Out of the box the client streams **dirty-region WebP**: each frame is
+diffed against the previous one and only the changed rectangle is encoded
+(split across CPU cores when large), with quality adapting per frame to hold
+the target frame rate (default 25 fps). For desktop content this gives the
+lowest latency and the sharpest text, and it works in every browser.
+
+Set `REMOTEMASTER_VIDEO_CODEC=h264` to use **H.264 via FFmpeg** instead —
+worthwhile on slow links or for full-motion video, since it uses a fraction
+of the bandwidth. If FFmpeg is missing, the encoder fails to start, or the
+browser can't decode it, the client falls back to WebP automatically.
+Display-resolution changes mid-session are handled in both paths — the
+encoder is rebuilt at the new size.
 
 You normally don't need to configure anything. When you do, set environment
 variables **before launching the client EXE** (they are read at startup):
@@ -78,13 +85,13 @@ $env:REMOTEMASTER_VIDEO_BITRATE_KBPS = "8000"
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto` tries H.264 then falls back to WebP. `h264` / `ffmpeg-h264` request H.264 explicitly (still falls back to WebP on failure, but logs it loudly). `webp` skips H.264 entirely. |
+| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto`/`webp` use dirty-region WebP (recommended). `h264` / `ffmpeg-h264` use FFmpeg H.264 for low-bandwidth links (falls back to WebP on any failure, logged loudly). |
 | `REMOTEMASTER_FFMPEG` | auto-detect | Full path to `ffmpeg.exe`. By default the client looks next to its own EXE, then on `PATH`. |
 | `REMOTEMASTER_H264_ENCODER` | `h264_mf` (Windows), `libx264` elsewhere | FFmpeg encoder name. Hardware options: `h264_nvenc` (NVIDIA), `h264_qsv` (Intel), `h264_amf` (AMD). |
 | `REMOTEMASTER_VIDEO_BITRATE_KBPS` | ~0.18 bits/pixel/frame, min 6000 | Target bitrate in kbps, clamped to 500–100000. Lower it for slow links, raise it for crisp text at high resolutions. |
 | `REMOTEMASTER_VIDEO_CODEC_STRING` | `avc1.42E01F` | WebCodecs codec string sent to the viewer. Only change this if you change the encoder profile. |
-| `REMOTEMASTER_FPS` | `15` | Capture/encode frame rate, clamped to 1–60. |
-| `REMOTEMASTER_QUALITY` | `65` | WebP quality (1–100). Only affects the WebP fallback path. |
+| `REMOTEMASTER_FPS` | `25` | Capture/encode frame rate, clamped to 1–60. |
+| `REMOTEMASTER_QUALITY` | `65` | WebP quality cap (1–100). Quality adapts downward automatically (floor 30) during heavy motion to hold the frame rate. |
 
 ### Quick recipes
 
@@ -92,8 +99,17 @@ $env:REMOTEMASTER_VIDEO_BITRATE_KBPS = "8000"
   `REMOTEMASTER_FPS=10`.
 - **Crisp text on a 4K display:** raise `REMOTEMASTER_VIDEO_BITRATE_KBPS`
   (e.g. `20000`).
-- **GPU is busy / driver issues:** `REMOTEMASTER_H264_ENCODER=libx264` for
-  software encoding, or `REMOTEMASTER_VIDEO_CODEC=webp` to bypass FFmpeg.
+- **Slow/metered WAN link:** `REMOTEMASTER_VIDEO_CODEC=h264` — H.264 uses a
+  fraction of WebP's bandwidth for the same motion.
+- **GPU is busy / driver issues on the H.264 path:**
+  `REMOTEMASTER_H264_ENCODER=libx264` for software encoding.
+
+### Diagnostics
+
+The client writes `client.log` next to its EXE (`%LOCALAPPDATA%\RemoteMaster`
+when installed by launch.ps1), including which encoder started and a
+`pipeline:` line every 5 seconds with frame rate, per-stage timings, and the
+current adaptive quality. Go runtime crashes land in `client-err.log`.
 
 ## 4. Troubleshooting
 

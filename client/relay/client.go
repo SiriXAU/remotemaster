@@ -9,6 +9,7 @@ import (
 	"image"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -27,7 +28,7 @@ func (e dialErr) Unwrap() error { return e.err }
 
 const (
 	defaultFrameQuality = 65
-	defaultTargetFPS    = 15
+	defaultTargetFPS    = 25
 	dialTimeout         = 10 * time.Second
 )
 
@@ -59,6 +60,11 @@ type Client struct {
 	clipMu     sync.Mutex
 	clipPrimed bool
 	lastClip   string
+
+	// forceWebP is set when the viewer reports it cannot decode the
+	// advertised video codec (binVideoUnsupported); the capture loop then
+	// switches to WebP frames. Reset at the start of each agent session.
+	forceWebP atomic.Bool
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -208,6 +214,11 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 				}
 				continue
 			}
+			if len(b) > 0 && b[0] == binVideoUnsupported {
+				log.Printf("viewer cannot decode video codec; switching to webp frames")
+				c.forceWebP.Store(true)
+				continue
+			}
 			ev, ok := decodeEvent(b)
 			if !ok {
 				continue
@@ -324,10 +335,21 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	defer ticker.Stop()
 
 	w, h := c.cap.Bounds()
+	log.Printf("capture: %dx%d @ %d fps target", w, h, c.targetFPS)
 	frameHasher := fnv.New64a()
 	var lastHash uint64
+	// Each agent session negotiates video support from scratch: a previous
+	// viewer's inability to decode H.264 shouldn't downgrade the next one.
+	c.forceWebP.Store(false)
 	encoder := newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 	defer func() { _ = encoder.Close() }()
+
+	// Pipeline timing stats, logged every 5s while frames are flowing, so
+	// field reports of "laggy" can be attributed to capture vs encode vs
+	// network without a rebuild.
+	var stCapture, stEncode, stWrite time.Duration
+	var stCaptures, stFrames, stBytes int
+	stLast := time.Now()
 
 	for {
 		select {
@@ -336,16 +358,30 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		case <-ticker.C:
 		}
 
+		tCap := time.Now()
 		img, err := c.cap.Capture()
 		if err != nil {
 			log.Printf("capture: %v", err)
 			continue
 		}
+		stCapture += time.Since(tCap)
+		stCaptures++
 
 		nrgba, ok := img.(*image.NRGBA)
 		if !ok {
 			log.Printf("capture: unexpected image type %T", img)
 			continue
+		}
+
+		// The viewer told us it cannot decode the current codec; swap to WebP
+		// right away. This must happen before the identical-frame skip below,
+		// or a static screen would postpone the switch indefinitely and leave
+		// the viewer showing nothing.
+		if _, isWebP := encoder.(*webpVideoEncoder); !isWebP && c.forceWebP.Load() {
+			_ = encoder.Close()
+			encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+			// Force a re-send of the current frame in the new format.
+			lastHash = 0
 		}
 
 		// Hash the full raw frame before encoding. The previous sampled hash was
@@ -358,6 +394,16 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		if h := frameHasher.Sum64(); h == lastHash {
+			// Even with no new frame to encode, a pipelined encoder may
+			// still be holding output for frames written on earlier ticks
+			// (e.g. the last frame of a motion burst). Deliver it now.
+			if d, ok := encoder.(interface{ DrainPackets() [][]byte }); ok {
+				for _, msg := range d.DrainPackets() {
+					if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+						return fmt.Errorf("write video: %w", err)
+					}
+				}
+			}
 			continue
 		} else {
 			lastHash = h
@@ -371,15 +417,21 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		if fw != w || fh != h {
 			_ = encoder.Close()
 			w, h = fw, fh
-			encoder = newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+			if c.forceWebP.Load() {
+				encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+			} else {
+				encoder = newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+			}
 		}
 
+		tEnc := time.Now()
 		messages, err := encoder.Encode(img)
+		stEncode += time.Since(tEnc)
 		if err != nil {
 			log.Printf("video encode: %v", err)
 			if _, ok := encoder.(*webpVideoEncoder); !ok {
 				_ = encoder.Close()
-				encoder = newWebPVideoEncoder(w, h, c.frameQuality)
+				encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 			}
 			// The current frame was dropped (encode failed or the encoder
 			// was just swapped to a fallback that hasn't seen it yet).
@@ -389,10 +441,42 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 
+		tWrite := time.Now()
 		for _, msg := range messages {
 			if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
 				return fmt.Errorf("write video: %w", err)
 			}
+			stBytes += len(msg)
+		}
+		stWrite += time.Since(tWrite)
+		stFrames++
+
+		if since := time.Since(stLast); since >= 5*time.Second && stCaptures > 0 {
+			extra := ""
+			if d, ok := encoder.(interface{ PipelineDepth() int64 }); ok {
+				extra = fmt.Sprintf(", %d frames in encoder", d.PipelineDepth())
+			}
+			if wq, ok := encoder.(interface{ CurrentQuality() float32 }); ok {
+				extra = fmt.Sprintf(", q=%.0f", wq.CurrentQuality())
+			}
+			// Capture runs every tick; encode/write only on frames that
+			// actually changed — average each over its own denominator or
+			// idle periods misreport capture as slow.
+			avgEncode, avgWrite := time.Duration(0), time.Duration(0)
+			if stFrames > 0 {
+				avgEncode = (stEncode / time.Duration(stFrames)).Round(time.Millisecond)
+				avgWrite = (stWrite / time.Duration(stFrames)).Round(time.Millisecond)
+			}
+			log.Printf("pipeline: %.1f fps sent (%.1f captured), avg capture %s, encode %s, write %s, %.0f KB/s%s",
+				float64(stFrames)/since.Seconds(),
+				float64(stCaptures)/since.Seconds(),
+				(stCapture / time.Duration(stCaptures)).Round(time.Millisecond),
+				avgEncode,
+				avgWrite,
+				float64(stBytes)/1024/since.Seconds(),
+				extra)
+			stCapture, stEncode, stWrite, stCaptures, stFrames, stBytes = 0, 0, 0, 0, 0, 0
+			stLast = time.Now()
 		}
 	}
 }
