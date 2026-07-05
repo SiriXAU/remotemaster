@@ -59,6 +59,9 @@ EXE.
 3. The remote screen appears with full mouse and keyboard control. Either side
    can end the session; the client also has an **End Session** button.
 
+For a fuller walkthrough — including video-quality tuning and
+troubleshooting — see the [usage guide](docs/usage.md).
+
 ## How a session works
 
 1. **Client connects** to `/ws/client`. The server allocates an unused 6-digit
@@ -140,6 +143,20 @@ The relay URL is resolved at runtime in this order:
 3. The value baked in at build time via `-X main.RelayServer=...`
    (`SERVER_URL` in `build-client.sh`), default `ws://localhost:8080`.
 
+Video behavior is tunable via environment variables read at client startup:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto` tries H.264 then WebP; `h264` requests H.264 explicitly; `webp` skips FFmpeg entirely. |
+| `REMOTEMASTER_FFMPEG` | auto-detect | Path to `ffmpeg.exe` (default: next to the EXE, then `PATH`). |
+| `REMOTEMASTER_H264_ENCODER` | `h264_mf` (Windows) | FFmpeg encoder: `libx264`, `h264_nvenc`, `h264_qsv`, `h264_amf`, ... |
+| `REMOTEMASTER_VIDEO_BITRATE_KBPS` | auto (min 6000) | Target bitrate, clamped to 500–100000. |
+| `REMOTEMASTER_VIDEO_CODEC_STRING` | `avc1.42E01F` | WebCodecs codec string sent to the viewer. |
+| `REMOTEMASTER_FPS` | `15` | Capture frame rate (1–60). |
+| `REMOTEMASTER_QUALITY` | `65` | WebP fallback quality (1–100). |
+
+See the [usage guide](docs/usage.md) for recipes and troubleshooting.
+
 ### Server
 
 | Variable | Default | Purpose |
@@ -159,6 +176,8 @@ encrypted if you terminate TLS in front of the relay. Read
 
 ## Documentation
 
+- [`docs/usage.md`](docs/usage.md) — how to run a session, tune video quality,
+  and troubleshoot.
 - [`docs/protocol.md`](docs/protocol.md) — WebSocket wire protocol reference.
 - [`docs/deployment.md`](docs/deployment.md) — production deployment with TLS.
 - [`docs/security.md`](docs/security.md) — threat model and hardening notes.
