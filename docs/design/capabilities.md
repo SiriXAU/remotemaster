@@ -112,21 +112,21 @@ pull a log back).
 - **Size cap:** enforce a configurable max (`REMOTEMASTER_TRANSFER_MAX`,
   default e.g. 100 MiB) and reject oversize offers up front.
 
-### Wire format — `0x0C`/`0x0D`/`0x0E`
+### Wire format — `0x11`/`0x12`/`0x13`
 ```
-0x0C file offer   sender → receiver
+0x11 file offer   sender → receiver
   [type:1][transferId:u32][nameLen:u16][size:u64][name utf8]
-0x0D file chunk   sender → receiver
+0x12 file chunk   sender → receiver
   [type:1][transferId:u32][seq:u32][data]           (data ≤ chunk size)
-0x0E file control receiver → sender / either
+0x13 file control receiver → sender / either
   [type:1][transferId:u32][code:1]                  code: 0=accept 1=reject 2=complete-ack 3=error
 ```
 
 - Chunk size ~64 KiB, well under `maxMessageBytes`.
-- Flow: sender emits `0x0C` offer → receiver validates (size/name/consent) and
-  replies `0x0E accept|reject` → sender streams `0x0D` chunks in `seq` order →
+- Flow: sender emits `0x11` offer → receiver validates (size/name/consent) and
+  replies `0x13 accept|reject` → sender streams `0x12` chunks in `seq` order →
   after the last chunk, receiver verifies total bytes and replies
-  `0x0E complete-ack` (or `error`).
+  `0x13 complete-ack` (or `error`).
 - `transferId` lets multiple transfers coexist and lets late chunks from an
   aborted transfer be dropped.
 
@@ -135,15 +135,15 @@ pull a log back).
   file then atomically renames on success; a sender that reads a local file in
   chunks. Both are pure Go and unit-testable with an in-memory transport.
 - Wire into `readPump`/write path in `client/relay/client.go` next to the
-  clipboard handling: dispatch `0x0C/0x0D/0x0E` to the transfer manager.
+  clipboard handling: dispatch `0x11/0x12/0x13` to the transfer manager.
 - Backpressure: interleave chunk sends with frames; don't block the capture
   loop. A simple approach is a bounded queue drained by the existing writer
   goroutine.
 
 ### Viewer implementation
 - Push UI: a file input + drag-drop zone; read the `File` via `FileReader`/
-  `arrayBuffer()`, chunk it, send `0x0C` then `0x0D`s, show a progress bar
-  driven by `0x0E`.
+  `arrayBuffer()`, chunk it, send `0x11` then `0x12`s, show a progress bar
+  driven by `0x13`.
 - Pull UI (later): request a path, receive chunks, assemble a `Blob`, trigger a
   download.
 
