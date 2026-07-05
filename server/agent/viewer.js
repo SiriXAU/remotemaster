@@ -1,9 +1,6 @@
 (function () {
   const MSG_WEBP_FRAME = 0x01;
-  const MSG_VIDEO_CONFIG = 0x08;
-  const MSG_VIDEO_CHUNK = 0x09;
   const MSG_CLIPBOARD = 0x0a;
-  const MSG_VIDEO_UNSUPPORTED = 0x0b;
   const MSG_WEBP_REGION = 0x0c;
   const MAX_CLIPBOARD_BYTES = 256 * 1024;
 
@@ -38,15 +35,6 @@
   let imageQueue = [];
   let discardRegionsUntilFull = false;
   let imageDecoding = false;
-  let videoDecoder = null;
-  let videoConfigured = false;
-  let videoWaitingForKey = true;
-  let activeVideoCodec = '';
-  // Cache of the most recent 0x08 video-config message, keyed to the decoded
-  // VideoDecoderConfig + codec family. Used to transparently rebuild the
-  // decoder after a runtime error, since the server only sends 0x08 once per
-  // connection and never re-sends it on its own.
-  let lastVideoConfig = null;
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -74,27 +62,6 @@
   function markFrameDrawn() {
     setStatus('connected', 'Connected');
     hideOverlay();
-  }
-
-  // Closes the current decoder, if any, tolerating decoders that are already
-  // in the 'closed' state (e.g. the WebCodecs spec auto-closes a decoder
-  // right before firing its error callback, so close() there would throw).
-  function closeVideoDecoder() {
-    if (!videoDecoder) return;
-    try {
-      if (videoDecoder.state !== 'closed') videoDecoder.close();
-    } catch (err) {
-      // Already closed or closing; nothing to do.
-    }
-    videoDecoder = null;
-  }
-
-  function codecFamily(codec) {
-    const lower = codec.toLowerCase();
-    if (lower.startsWith('avc1.') || lower.startsWith('avc3.')) return 'H.264';
-    if (lower.startsWith('hvc1.') || lower.startsWith('hev1.')) return 'HEVC';
-    if (lower.startsWith('av01.')) return 'AV1';
-    return '';
   }
 
   function scaleCanvas() {
@@ -136,12 +103,6 @@
         break;
       case MSG_WEBP_REGION:
         enqueueRegionFrame(buffer);
-        break;
-      case MSG_VIDEO_CONFIG:
-        configureVideo(buffer);
-        break;
-      case MSG_VIDEO_CHUNK:
-        decodeVideoChunk(buffer);
         break;
       case MSG_CLIPBOARD:
         receiveClipboard(buffer);
@@ -277,147 +238,6 @@
     if (imageQueue.length) decodeNextImageFrame();
   }
 
-  // Tells the client this browser cannot decode the advertised video codec,
-  // so it should switch to WebP frames. Sent at most once per connection.
-  let videoUnsupportedSent = false;
-  function requestWebPFallback(reason) {
-    console.warn('video codec unsupported, requesting WebP fallback:', reason);
-    setStatus('waiting', 'Video codec unsupported here; switching to WebP...');
-    if (videoUnsupportedSent) return;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new Uint8Array([MSG_VIDEO_UNSUPPORTED]));
-      videoUnsupportedSent = true;
-    }
-  }
-
-  function configureVideo(buffer) {
-    if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window)) {
-      requestWebPFallback('WebCodecs is not available in this browser');
-      return;
-    }
-    if (buffer.byteLength < 12) return;
-
-    const dv = new DataView(buffer);
-    const codecLen = dv.getUint8(1);
-    const w = dv.getUint32(2);
-    const h = dv.getUint32(6);
-    const descLen = dv.getUint16(10);
-    const codecOffset = 12;
-    const descOffset = codecOffset + codecLen;
-    if (buffer.byteLength < descOffset + descLen) return;
-
-    const codec = textDecoder.decode(new Uint8Array(buffer, codecOffset, codecLen));
-    const family = codecFamily(codec);
-    if (!family) {
-      requestWebPFallback(`unrecognized codec string ${codec}`);
-      return;
-    }
-    const config = {
-      codec,
-      codedWidth: w,
-      codedHeight: h,
-      optimizeForLatency: true,
-    };
-    if (descLen > 0) {
-      config.description = new Uint8Array(buffer, descOffset, descLen);
-    }
-
-    lastVideoConfig = { codec, config, family };
-    setRemoteSize(w, h);
-    buildVideoDecoder(codec, config, family);
-  }
-
-  // (Re)creates the VideoDecoder from a decoded config. Used both for the
-  // initial 0x08 config message and to recover from a decoder runtime error
-  // without waiting for the server to resend a config it only sends once.
-  function buildVideoDecoder(codec, config, family) {
-    closeVideoDecoder();
-    videoConfigured = false;
-    videoWaitingForKey = true;
-    activeVideoCodec = codec;
-
-    videoDecoder = new VideoDecoder({
-      output: (frame) => {
-        const w = frame.displayWidth || frame.codedWidth || remoteW;
-        const h = frame.displayHeight || frame.codedHeight || remoteH;
-        setRemoteSize(w, h);
-        ctx.drawImage(frame, 0, 0, remoteW, remoteH);
-        frame.close();
-        markFrameDrawn();
-      },
-      error: (err) => {
-        console.error('video decode error', err);
-        recoverVideoDecoder();
-      },
-    });
-
-    const supportCheck = VideoDecoder.isConfigSupported
-      ? VideoDecoder.isConfigSupported(config)
-      : Promise.resolve({ supported: true, config });
-    const decoder = videoDecoder;
-
-    supportCheck
-      .then((result) => {
-        if (videoDecoder !== decoder) return;
-        if (!result.supported) throw new Error(`unsupported ${family} config`);
-        decoder.configure(result.config);
-        videoConfigured = true;
-      })
-      .catch((err) => {
-        console.error('video config error', err);
-        if (videoDecoder === decoder) activeVideoCodec = '';
-        requestWebPFallback(`${family} config rejected: ${err}`);
-      });
-  }
-
-  // Rebuilds the decoder from the cached config after a runtime decode
-  // error. The rebuilt decoder starts back in "waiting for keyframe" mode,
-  // so corrupted decoder state is discarded and playback resumes cleanly
-  // from the next IDR/keyframe chunk. If no config has ever been received,
-  // this leaves the (unrecoverable) error state exactly as before.
-  function recoverVideoDecoder() {
-    closeVideoDecoder();
-    videoConfigured = false;
-    videoWaitingForKey = true;
-    activeVideoCodec = '';
-
-    if (!lastVideoConfig) {
-      setStatus('error', 'Video decode error');
-      return;
-    }
-
-    setStatus('waiting', 'Recovering video decoder...');
-    buildVideoDecoder(lastVideoConfig.codec, lastVideoConfig.config, lastVideoConfig.family);
-  }
-
-  function decodeVideoChunk(buffer) {
-    if (!videoDecoder || !videoConfigured || buffer.byteLength < 14) return;
-
-    const dv = new DataView(buffer);
-    const flags = dv.getUint8(1);
-    const isKey = (flags & 0x01) !== 0;
-    const timestamp = Number(dv.getBigUint64(2));
-    const duration = dv.getUint32(10);
-
-    if (videoWaitingForKey && !isKey) return;
-    if (isKey) videoWaitingForKey = false;
-    if (!isKey && videoDecoder.decodeQueueSize > 2) return;
-
-    const chunk = {
-      type: isKey ? 'key' : 'delta',
-      timestamp,
-      data: new Uint8Array(buffer, 14),
-    };
-    if (duration > 0) chunk.duration = duration;
-
-    try {
-      videoDecoder.decode(new EncodedVideoChunk(chunk));
-    } catch (err) {
-      console.error('video chunk error', err);
-      recoverVideoDecoder();
-    }
-  }
-
   function connect() {
     if (dead) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -467,11 +287,6 @@
     ws.onerror = () => setStatus('error', 'Connection error');
 
     ws.onclose = () => {
-      closeVideoDecoder();
-      videoConfigured = false;
-      videoWaitingForKey = true;
-      activeVideoCodec = '';
-      videoUnsupportedSent = false;
       imageQueue.length = 0;
       discardRegionsUntilFull = false;
 

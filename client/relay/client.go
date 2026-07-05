@@ -9,7 +9,6 @@ import (
 	"image"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -60,11 +59,6 @@ type Client struct {
 	clipMu     sync.Mutex
 	clipPrimed bool
 	lastClip   string
-
-	// forceWebP is set when the viewer reports it cannot decode the
-	// advertised video codec (binVideoUnsupported); the capture loop then
-	// switches to WebP frames. Reset at the start of each agent session.
-	forceWebP atomic.Bool
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -214,11 +208,6 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 				}
 				continue
 			}
-			if len(b) > 0 && b[0] == binVideoUnsupported {
-				log.Printf("viewer cannot decode video codec; switching to webp frames")
-				c.forceWebP.Store(true)
-				continue
-			}
 			ev, ok := decodeEvent(b)
 			if !ok {
 				continue
@@ -338,10 +327,7 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	log.Printf("capture: %dx%d @ %d fps target", w, h, c.targetFPS)
 	frameHasher := fnv.New64a()
 	var lastHash uint64
-	// Each agent session negotiates video support from scratch: a previous
-	// viewer's inability to decode H.264 shouldn't downgrade the next one.
-	c.forceWebP.Store(false)
-	encoder := newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+	encoder := newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 	defer func() { _ = encoder.Close() }()
 
 	// Pipeline timing stats, logged every 5s while frames are flowing, so
@@ -373,17 +359,6 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 
-		// The viewer told us it cannot decode the current codec; swap to WebP
-		// right away. This must happen before the identical-frame skip below,
-		// or a static screen would postpone the switch indefinitely and leave
-		// the viewer showing nothing.
-		if _, isWebP := encoder.(*webpVideoEncoder); !isWebP && c.forceWebP.Load() {
-			_ = encoder.Close()
-			encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
-			// Force a re-send of the current frame in the new format.
-			lastHash = 0
-		}
-
 		// Hash the full raw frame before encoding. The previous sampled hash was
 		// fast, but could miss small cursor/caret/text changes that matter in a
 		// remote desktop session.
@@ -394,14 +369,12 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		if h := frameHasher.Sum64(); h == lastHash {
-			// Even with no new frame to encode, a pipelined encoder may
-			// still be holding output for frames written on earlier ticks
-			// (e.g. the last frame of a motion burst). Deliver it now.
-			if d, ok := encoder.(interface{ DrainPackets() [][]byte }); ok {
-				for _, msg := range d.DrainPackets() {
-					if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
-						return fmt.Errorf("write video: %w", err)
-					}
+			// No new frame to encode — the idle moment is where the
+			// encoder sends its periodic full refresh, so its cost never
+			// lands mid-motion.
+			for _, msg := range encoder.IdleTick() {
+				if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+					return fmt.Errorf("write video: %w", err)
 				}
 			}
 			continue
@@ -417,11 +390,7 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		if fw != w || fh != h {
 			_ = encoder.Close()
 			w, h = fw, fh
-			if c.forceWebP.Load() {
-				encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
-			} else {
-				encoder = newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
-			}
+			encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 		}
 
 		tEnc := time.Now()
@@ -429,14 +398,9 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		stEncode += time.Since(tEnc)
 		if err != nil {
 			log.Printf("video encode: %v", err)
-			if _, ok := encoder.(*webpVideoEncoder); !ok {
-				_ = encoder.Close()
-				encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
-			}
-			// The current frame was dropped (encode failed or the encoder
-			// was just swapped to a fallback that hasn't seen it yet).
-			// Reset lastHash so the next loop iteration re-encodes the
-			// current frame instead of waiting for the screen to change.
+			// The current frame was dropped; reset lastHash so the next
+			// loop iteration re-encodes it instead of waiting for the
+			// screen to change.
 			lastHash = 0
 			continue
 		}
@@ -452,13 +416,7 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		stFrames++
 
 		if since := time.Since(stLast); since >= 5*time.Second && stCaptures > 0 {
-			extra := ""
-			if d, ok := encoder.(interface{ PipelineDepth() int64 }); ok {
-				extra = fmt.Sprintf(", %d frames in encoder", d.PipelineDepth())
-			}
-			if wq, ok := encoder.(interface{ CurrentQuality() float32 }); ok {
-				extra = fmt.Sprintf(", q=%.0f", wq.CurrentQuality())
-			}
+			extra := fmt.Sprintf(", q=%.0f", encoder.CurrentQuality())
 			// Capture runs every tick; encode/write only on frames that
 			// actually changed — average each over its own denominator or
 			// idle periods misreport capture as slow.

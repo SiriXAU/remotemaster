@@ -103,7 +103,7 @@ func main() {
 }
 
 // launchScriptHandler serves a PowerShell one-liner bootstrap: downloads the
-// latest client EXE and FFmpeg dependency, writes server.txt, and launches it.
+// latest client EXE, writes server.txt, and launches it.
 // Usage: irm http://<host>/launch.ps1 | iex
 func launchScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scheme := "ws"
@@ -129,26 +129,8 @@ $ProgressPreference = 'SilentlyContinue'
 $dir = Join-Path $env:LOCALAPPDATA 'RemoteMaster'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $exe = Join-Path $dir 'remotemaster-client.exe'
-$ffmpeg = Join-Path $dir 'ffmpeg.exe'
 Write-Host 'Downloading RemoteMaster client...'
 Invoke-WebRequest -Uri 'https://github.com/sirixau/remotemaster/releases/download/latest/remotemaster-client.exe' -OutFile $exe -UseBasicParsing
-if (-not (Test-Path $ffmpeg)) {
-  try {
-    $zip = Join-Path $dir 'ffmpeg-release-essentials.zip'
-    $extract = Join-Path $dir 'ffmpeg-download'
-    if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
-    Write-Host 'Downloading FFmpeg dependency...'
-    Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
-    Expand-Archive -Path $zip -DestinationPath $extract -Force
-    $found = Get-ChildItem -Path $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
-    if ($null -eq $found) { throw 'ffmpeg.exe was not found in the downloaded FFmpeg package' }
-    Copy-Item -Path $found.FullName -Destination $ffmpeg -Force
-    Remove-Item -Force $zip -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
-  } catch {
-    Write-Warning "FFmpeg download failed; continuing without H.264 (WebP fallback): $($_.Exception.Message)"
-  }
-}
 # Write server.txt without a BOM: Windows PowerShell 5.1's Set-Content
 # -Encoding UTF8 prepends a UTF-8 BOM, which corrupts the URL for readers
 # that treat the file as plain bytes.

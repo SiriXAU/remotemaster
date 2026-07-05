@@ -13,16 +13,16 @@ commitment, and priorities will shift with real usage.
 
 ## Streaming & performance
 
-- **H.264 encode on the client** *(in progress, design done)* — The viewer and
-  wire protocol already carry the `0x08`/`0x09` WebCodecs path
-  ([`docs/protocol.md`](docs/protocol.md)); the client just needs a Media
-  Foundation H.264 encoder feeding it. This is the single biggest bandwidth and
-  smoothness win over the current WebP-per-frame path. Full plan in
-  [`docs/h264-streaming.md`](docs/h264-streaming.md).
+- ~~H.264 encode on the client~~ *(dropped)* — An FFmpeg-backed H.264 path
+  was built and field-tested, then removed in favor of dirty-region WebP
+  with adaptive quality: for desktop content WebP won on latency, text
+  sharpness, and zero external dependencies. Revisit only if low-bandwidth
+  WAN sessions become a priority.
 - **DXGI Desktop Duplication capture** — Replace GDI `BitBlt`
   (`client/capture/capture_windows.go`) with Desktop Duplication. It avoids the
   per-frame GDI copy and, crucially, exposes dirty/move rectangles so only
-  changed regions are captured and encoded. Pairs naturally with H.264.
+  changed regions are captured and encoded — replacing the CPU-side frame
+  diff and cutting the ~25 ms per-frame capture cost.
 - **Adaptive bitrate / FPS** — Currently a fixed 15 fps at WebP quality 65
   (`client/relay/client.go`). Back off resolution, FPS, or bitrate when the
   WebSocket send buffer, encoder queue, or the browser's

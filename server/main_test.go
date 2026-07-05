@@ -123,7 +123,7 @@ func TestIsValidHost(t *testing.T) {
 	}
 }
 
-func TestLaunchScriptDownloadsFFmpegDependency(t *testing.T) {
+func TestLaunchScript(t *testing.T) {
 	req := httptest.NewRequest("GET", "https://support.example/launch.ps1", nil)
 	rec := httptest.NewRecorder()
 
@@ -135,14 +135,16 @@ func TestLaunchScriptDownloadsFFmpegDependency(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"remotemaster-client.exe",
-		"ffmpeg-release-essentials.zip",
-		"ffmpeg.exe",
-		"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
 		"wss://support.example",
+		"client-err.log",
+		"$ProgressPreference = 'SilentlyContinue'",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("launch script missing %q:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "ffmpeg") {
+		t.Fatalf("launch script still references ffmpeg:\n%s", body)
 	}
 }
 

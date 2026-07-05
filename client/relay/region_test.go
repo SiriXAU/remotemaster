@@ -28,7 +28,7 @@ func TestDiffBounds(t *testing.T) {
 
 func TestWebPEncoderRegionFrames(t *testing.T) {
 	const w, h = 64, 48
-	enc := newWebPVideoEncoder(w, h, 25, 80).(*webpVideoEncoder)
+	enc := newWebPVideoEncoder(w, h, 25, 80)
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 
 	// First frame is always a full 0x01 frame and primes the diff buffer.
@@ -71,10 +71,10 @@ func TestWebPEncoderRegionFrames(t *testing.T) {
 
 	// An idle tick past the refresh interval emits a full-frame refresh.
 	enc.lastFull = time.Now().Add(-webpFullRefreshInterval - time.Second)
-	if msgs := enc.DrainPackets(); len(msgs) != 1 || msgs[0][0] != binFrame {
+	if msgs := enc.IdleTick(); len(msgs) != 1 || msgs[0][0] != binFrame {
 		t.Fatalf("idle refresh: got %d msgs, want one binFrame", len(msgs))
 	}
-	if enc.DrainPackets() != nil {
+	if enc.IdleTick() != nil {
 		t.Fatalf("idle refresh should reset the interval")
 	}
 

@@ -95,6 +95,7 @@ func main() {
 		},
 		func() {
 			log.Println("agent connected")
+			ui.SetStatus("Agent connected — your screen is being shared")
 		},
 		func() {
 			log.Println("agent disconnected")

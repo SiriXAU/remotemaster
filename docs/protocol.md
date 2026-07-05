@@ -53,10 +53,7 @@ Byte 0 is the type tag.
 | `0x05` | scroll | agent → client | `[type:1][x:u16][y:u16][dx:i16][dy:i16]` |
 | `0x06` | key down | agent → client | `[type:1][vk:u16]` |
 | `0x07` | key up | agent → client | `[type:1][vk:u16]` |
-| `0x08` | video config | client → agent | `[type:1][codecLen:1][w:u32][h:u32][descLen:u16][codec][description]` |
-| `0x09` | video chunk | client → agent | `[type:1][flags:1][timestamp:u64][duration:u32][payload]` |
 | `0x0A` | clipboard text | both | `[type:1][utf8 bytes]` |
-| `0x0B` | video unsupported | agent → client | `[type:1]` |
 | `0x0C` | WebP region | client → agent | `[type:1][x:u32][y:u32][w:u32][h:u32][webp bytes]` |
 
 Notes:
@@ -76,17 +73,6 @@ Notes:
   (`input.IsExtendedVK`) so e.g. arrow keys are not misread as numpad
   digits. On tab/canvas blur the viewer releases any held keys to avoid
   stuck modifiers on the remote machine.
-- **`flags & 0x01`** on a video chunk marks an IDR/key frame. The viewer drops
-  delta chunks until it has seen a key frame, and also skips deltas when the
-  decoder's `decodeQueueSize` is backing up.
-- **Encoded video codecs** use WebCodecs codec strings. The client validates
-  outgoing `0x08` configs against the Moonlight-compatible families currently
-  supported by the encoded path: `avc1`/`avc3` (H.264), `hvc1`/`hev1` (HEVC),
-  and `av01` (AV1).
-- **Video unsupported** (`0x0B`) is sent by the viewer when it cannot decode
-  the advertised codec (no WebCodecs, unrecognized codec string, or a rejected
-  decoder config). The client responds by switching to the WebP frame path
-  for the rest of the session; the flag resets when a new agent connects.
 - **WebP regions** (`0x0C`) patch a sub-rectangle of the last full `0x01`
   frame at `(x, y)`. Unlike full frames they must not be skipped by the
   viewer — each one is a delta against the current canvas. The client sends
@@ -113,31 +99,3 @@ per-frame budget at the target rate (default 25 fps), and a full `0x01`
 frame is re-sent periodically as self-healing. The viewer decodes with
 `createImageBitmap` (falling back to an `<img>` blob) and draws to a
 `<canvas>`; region patches are queued and never dropped.
-
-## Video path (encoded codecs, opt-in)
-
-The `0x08`/`0x09` messages are the bandwidth-efficient codec path for slow
-links, enabled with `REMOTEMASTER_VIDEO_CODEC=h264`. The browser decodes
-them through WebCodecs (`VideoDecoder` + `EncodedVideoChunk`); the Windows
-client drives an FFmpeg-backed H.264 encoder (`client/relay/encoder.go`,
-helpers in `proto.go`/`codec.go`), preferring Media Foundation's `h264_mf`
-with the low-latency `display_remoting` scenario and cropping odd screen
-dimensions to even (a 4:2:0 requirement). If the encoder fails to start, or
-the viewer reports `0x0B`, the client falls back to the WebP path
-automatically.
-
-The codec masks mirror `moonlight-common-c` so the eventual encoder can choose
-families and profile features without changing the wire format:
-
-| Mask | Meaning |
-| --- | --- |
-| `0x000F` | H.264 family |
-| `0x0F00` | HEVC family |
-| `0xF000` | AV1 family |
-| `0xAA00` | 10-bit formats |
-| `0xCC04` | YUV 4:4:4 formats |
-
-See [`h264-streaming.md`](h264-streaming.md) for the first encoder plan.
-See [`moonlight-codec-integration.md`](moonlight-codec-integration.md) for the
-Moonlight source review and why the actual encoder/decoder still needs to be
-provided by platform codec APIs.
