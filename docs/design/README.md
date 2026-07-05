@@ -6,8 +6,9 @@ or AI) uses to pick one up and ship it. Each task is scoped to land as its own
 PR with tests, the way the first roadmap batch did.
 
 The already-shipped items (project hygiene, configurable limits, `/metrics`,
-`AGENT_TOKEN`, audit logging, clipboard sync, keyboard mapping) are **not**
-listed here — see the git history and `docs/deployment.md`.
+`AGENT_TOKEN`, audit logging, clipboard sync, keyboard mapping, dirty-region
+WebP streaming, and adaptive WebP quality) are **not** listed here — see the
+git history and the user-facing docs.
 
 ## How to pick up a task
 
@@ -35,13 +36,12 @@ listed here — see the git history and `docs/deployment.md`.
 ## Task registry
 
 Task IDs are stable; reference them in branches, commits, and PRs (e.g.
-`RM-STREAM-2`). "Effort" is rough: S ≤ ~1 focused PR, M = 1–2, L = multi-PR.
+`RM-CAP-2`). "Effort" is rough: S <= ~1 focused PR, M = 1–2, L = multi-PR.
 
 | ID | Feature | Theme | Effort | Depends on | Design |
 |----|---------|-------|--------|-----------|--------|
 | RM-STREAM-1 | DXGI Desktop Duplication capture | Streaming | L | — | [streaming-performance](streaming-performance.md#rm-stream-1--dxgi-desktop-duplication-capture) |
-| RM-STREAM-2 | Region / dirty-rect diffing | Streaming | M | — (better with STREAM-1) | [streaming-performance](streaming-performance.md#rm-stream-2--region--dirty-rect-diffing) |
-| RM-STREAM-3 | Adaptive bitrate / FPS | Streaming | M | — | [streaming-performance](streaming-performance.md#rm-stream-3--adaptive-bitrate--fps) |
+| RM-STREAM-3 | Adaptive FPS / resolution | Streaming | M | — | [streaming-performance](streaming-performance.md#rm-stream-3--adaptive-fps--resolution) |
 | RM-CAP-1 | Multi-monitor support | Capabilities | M–L | — | [capabilities](capabilities.md#rm-cap-1--multi-monitor-support) |
 | RM-CAP-2 | File transfer | Capabilities | L | SEC-1 (consent, ideal) | [capabilities](capabilities.md#rm-cap-2--file-transfer) |
 | RM-CAP-3 | Session chat / annotations | Capabilities | S–M | — | [capabilities](capabilities.md#rm-cap-3--session-chat--annotations) |
@@ -67,20 +67,19 @@ parallel (they touch different files):
 
 1. **RM-SEC-1 (consent + indicator)** — highest trust value, no deps, and it
    unblocks safe file transfer.
-2. **RM-STREAM-2 (dirty-rect diffing, tiled-hash variant)** — real bandwidth
-   win, ships without DXGI, pure-Go testable encode side.
-3. **RM-CAP-3 (chat)** — small, self-contained, useful; annotations as a
+2. **RM-CAP-3 (chat)** — small, self-contained, useful; annotations as a
    follow-up.
-4. **RM-STREAM-3 (adaptive)** — pure-Go controller, big UX win on bad links.
-5. **RM-SEC-2 (expiring codes)** — small crypto, sets up SEC-3.
-6. **RM-OPS-1 stage 1 (Backend interface refactor)** — safe refactor, no
+3. **RM-STREAM-3 (adaptive FPS / resolution)** — pure-Go controller, big UX
+   win on bad links.
+4. **RM-SEC-2 (expiring codes)** — small crypto, sets up SEC-3.
+5. **RM-OPS-1 stage 1 (Backend interface refactor)** — safe refactor, no
    behavior change, unlocks Redis later.
-7. **RM-CAP-1 (multi-monitor)** and **RM-PLAT-3 (signing)** — independent.
-8. **RM-STREAM-1 (DXGI)** → **RM-STREAM-4 (H.264)** — the big streaming track.
-9. **RM-CAP-2 (file transfer)** — after SEC-1.
-10. **RM-PLAT-1/2 (macOS/Linux)** — parallel platform track; start with the
+6. **RM-CAP-1 (multi-monitor)** and **RM-PLAT-3 (signing)** — independent.
+7. **RM-STREAM-1 (DXGI)** — the big remaining streaming track.
+8. **RM-CAP-2 (file transfer)** — after SEC-1.
+9. **RM-PLAT-1/2 (macOS/Linux)** — parallel platform track; start with the
     portable `main`/`ui` refactor called out in PLAT-1.
-11. **RM-SEC-3 (E2E)** — last of the security track; highest risk, reuses
+10. **RM-SEC-3 (E2E)** — last of the security track; highest risk, reuses
     SEC-1's out-of-band channel and SEC-2's shared secret.
 
 ## Binary protocol tag registry
@@ -94,19 +93,20 @@ verbatim, so tags are shared across both directions — do not reuse a number.
 |-----|------|--------|-----------|-----------|
 | `0x01` | WebP frame | **shipped** | client → agent | `docs/protocol.md` |
 | `0x02`–`0x07` | input events (move/down/up/scroll/key↓/key↑) | **shipped** | agent → client | `docs/protocol.md` |
-| `0x08` | video config | **shipped** | client → agent | `docs/protocol.md` |
-| `0x09` | video chunk | **shipped** | client → agent | `docs/protocol.md` |
+| `0x08`–`0x09` | reserved: removed encoded-video path | **reserved** | client → agent | `client/relay/proto.go` |
 | `0x0A` | clipboard text | **shipped** | both | `docs/protocol.md` |
-| `0x0B` | frame region (dirty-rect) | *proposed* RM-STREAM-2 | client → agent | [streaming-performance](streaming-performance.md#wire-format--0x0b-frame-region) |
-| `0x0C` | file offer | *proposed* RM-CAP-2 | sender → receiver | [capabilities](capabilities.md#wire-format--0x0c0x0d0x0e) |
-| `0x0D` | file chunk | *proposed* RM-CAP-2 | sender → receiver | [capabilities](capabilities.md#wire-format--0x0c0x0d0x0e) |
-| `0x0E` | file control | *proposed* RM-CAP-2 | receiver → sender | [capabilities](capabilities.md#wire-format--0x0c0x0d0x0e) |
+| `0x0B` | reserved: removed encoded-video path | **reserved** | client → agent | `client/relay/proto.go` |
+| `0x0C` | WebP region | **shipped** | client → agent | `docs/protocol.md` |
+| `0x0D`–`0x0E` | **free** | — | — | — |
 | `0x0F` | annotation / pointer | *proposed* RM-CAP-3 | agent → client | [capabilities](capabilities.md#annotations--0x0f-pointer) |
 | `0x10` | E2E envelope (wraps any tag) | *proposed* RM-SEC-3 | both | [security-trust](security-trust.md#wire-format) |
-| `0x11`+ | **free** | — | — | — |
+| `0x11` | file offer | *proposed* RM-CAP-2 | sender → receiver | [capabilities](capabilities.md#wire-format--0x110x120x13) |
+| `0x12` | file chunk | *proposed* RM-CAP-2 | sender → receiver | [capabilities](capabilities.md#wire-format--0x110x120x13) |
+| `0x13` | file control | *proposed* RM-CAP-2 | receiver → sender | [capabilities](capabilities.md#wire-format--0x110x120x13) |
+| `0x14`+ | **free** | — | — | — |
 
 > Proposed tags are reserved by their design doc but not yet implemented. If you
-> implement a different feature first and need a tag, take `0x11`+ rather than a
+> implement a different feature first and need a tag, take `0x14`+ rather than a
 > reserved one, and update this table.
 
 ### JSON control message types

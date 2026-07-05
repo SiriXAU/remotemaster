@@ -82,13 +82,11 @@ implemented — this is a who/when/how-long trail, not a what-happened one.
 ## Client distribution
 
 `/launch.ps1` downloads the client from the repository's rolling `latest` GitHub
-release, which CI updates on every push to `main`. It also downloads the Gyan
-FFmpeg release essentials package when `%LOCALAPPDATA%\RemoteMaster\ffmpeg.exe`
-is missing, extracts `ffmpeg.exe` next to the client, and reuses that local copy
-on later launches. If you fork the project, update the download URLs in
-`launchScriptHandler` (`server/main.go`) and the release workflow
-(`.github/workflows/release.yml`) to point at your fork and chosen FFmpeg source,
-or the one-liner will pull upstream binaries.
+release, which CI updates on every push to `main`. The client is a single EXE
+with no companion runtime files. If you fork the project, update the download
+URLs in `launchScriptHandler` (`server/main.go`) and the release workflow
+(`.github/workflows/release.yml`) to point at your fork, or the one-liner will
+pull upstream binaries.
 
 ## Session lifecycle limits
 
