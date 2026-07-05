@@ -99,47 +99,36 @@ func TestVideoFormatFromCodecString(t *testing.T) {
 		name   string
 		codec  string
 		want   VideoFormat
-		family codecFamily
-		tenBit bool
-		yuv444 bool
 		wantOK bool
 	}{
 		{
 			name:   "h264",
 			codec:  "avc1.64001f",
 			want:   VideoFormatH264,
-			family: codecFamilyH264,
 			wantOK: true,
 		},
 		{
 			name:   "hevc-main",
 			codec:  "hvc1.1.6.L120.90",
 			want:   VideoFormatH265,
-			family: codecFamilyH265,
 			wantOK: true,
 		},
 		{
 			name:   "hevc-main10",
 			codec:  "hev1.2.4.L120.B0",
 			want:   VideoFormatH265Main10,
-			family: codecFamilyH265,
-			tenBit: true,
 			wantOK: true,
 		},
 		{
 			name:   "av1-main8",
 			codec:  "av01.0.08M.08",
 			want:   VideoFormatAV1Main8,
-			family: codecFamilyAV1,
 			wantOK: true,
 		},
 		{
 			name:   "av1-high10-444",
 			codec:  "av01.1.12M.10",
 			want:   VideoFormatAV1High10444,
-			family: codecFamilyAV1,
-			tenBit: true,
-			yuv444: true,
 			wantOK: true,
 		},
 		{
@@ -160,16 +149,6 @@ func TestVideoFormatFromCodecString(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("format = %#04x, want %#04x", got, tt.want)
-			}
-			family, ok := got.Family()
-			if !ok || family != tt.family {
-				t.Fatalf("family = %q, %v; want %q, true", family, ok, tt.family)
-			}
-			if got.Is10Bit() != tt.tenBit {
-				t.Fatalf("Is10Bit = %v, want %v", got.Is10Bit(), tt.tenBit)
-			}
-			if got.IsYUV444() != tt.yuv444 {
-				t.Fatalf("IsYUV444 = %v, want %v", got.IsYUV444(), tt.yuv444)
 			}
 		})
 	}

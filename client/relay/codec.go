@@ -28,35 +28,6 @@ const (
 	VideoFormatMaskYUV444    VideoFormat = 0xCC04
 )
 
-type codecFamily string
-
-const (
-	codecFamilyH264 codecFamily = "h264"
-	codecFamilyH265 codecFamily = "h265"
-	codecFamilyAV1  codecFamily = "av1"
-)
-
-func (f VideoFormat) Family() (codecFamily, bool) {
-	switch {
-	case f&VideoFormatMaskH264 != 0:
-		return codecFamilyH264, true
-	case f&VideoFormatMaskH265 != 0:
-		return codecFamilyH265, true
-	case f&VideoFormatMaskAV1 != 0:
-		return codecFamilyAV1, true
-	default:
-		return "", false
-	}
-}
-
-func (f VideoFormat) Is10Bit() bool {
-	return f&VideoFormatMask10Bit != 0
-}
-
-func (f VideoFormat) IsYUV444() bool {
-	return f&VideoFormatMaskYUV444 != 0
-}
-
 func videoFormatFromCodecString(codec string) (VideoFormat, bool) {
 	codec = strings.ToLower(strings.TrimSpace(codec))
 	switch {
