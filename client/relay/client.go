@@ -27,7 +27,7 @@ func (e dialErr) Unwrap() error { return e.err }
 
 const (
 	defaultFrameQuality = 65
-	defaultTargetFPS    = 15
+	defaultTargetFPS    = 25
 	dialTimeout         = 10 * time.Second
 )
 
@@ -49,6 +49,10 @@ type Client struct {
 	// OnConnFail is called when the server cannot be reached at all (dial error),
 	// as opposed to onDisconn which fires after a working session drops.
 	OnConnFail func()
+
+	// OnNotice surfaces session warnings on the client window (e.g. "the
+	// focused app is elevated; input is blocked"). Empty string clears it.
+	OnNotice func(string)
 
 	// Clip, when set, enables bidirectional text clipboard sync with the agent.
 	Clip clipboard.Clipboard
@@ -166,6 +170,7 @@ func (c *Client) connect(ctx context.Context) error {
 		captureErrCh <- c.captureLoop(connCtx, conn)
 	}()
 	go c.clipboardLoop(connCtx, conn)
+	go c.watchElevatedFocus(connCtx, conn)
 
 	select {
 	case <-ctx.Done():
@@ -324,10 +329,18 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	defer ticker.Stop()
 
 	w, h := c.cap.Bounds()
+	log.Printf("capture: %dx%d @ %d fps target", w, h, c.targetFPS)
 	frameHasher := fnv.New64a()
 	var lastHash uint64
-	encoder := newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+	encoder := newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 	defer func() { _ = encoder.Close() }()
+
+	// Pipeline timing stats, logged every 5s while frames are flowing, so
+	// field reports of "laggy" can be attributed to capture vs encode vs
+	// network without a rebuild.
+	var stCapture, stEncode, stWrite time.Duration
+	var stCaptures, stFrames, stBytes int
+	stLast := time.Now()
 
 	for {
 		select {
@@ -336,11 +349,14 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		case <-ticker.C:
 		}
 
+		tCap := time.Now()
 		img, err := c.cap.Capture()
 		if err != nil {
 			log.Printf("capture: %v", err)
 			continue
 		}
+		stCapture += time.Since(tCap)
+		stCaptures++
 
 		nrgba, ok := img.(*image.NRGBA)
 		if !ok {
@@ -358,6 +374,14 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 		if h := frameHasher.Sum64(); h == lastHash {
+			// No new frame to encode — the idle moment is where the
+			// encoder sends its periodic full refresh, so its cost never
+			// lands mid-motion.
+			for _, msg := range encoder.IdleTick() {
+				if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+					return fmt.Errorf("write video: %w", err)
+				}
+			}
 			continue
 		} else {
 			lastHash = h
@@ -371,28 +395,51 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		if fw != w || fh != h {
 			_ = encoder.Close()
 			w, h = fw, fh
-			encoder = newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+			encoder = newWebPVideoEncoder(w, h, c.targetFPS, c.frameQuality)
 		}
 
+		tEnc := time.Now()
 		messages, err := encoder.Encode(img)
+		stEncode += time.Since(tEnc)
 		if err != nil {
 			log.Printf("video encode: %v", err)
-			if _, ok := encoder.(*webpVideoEncoder); !ok {
-				_ = encoder.Close()
-				encoder = newWebPVideoEncoder(w, h, c.frameQuality)
-			}
-			// The current frame was dropped (encode failed or the encoder
-			// was just swapped to a fallback that hasn't seen it yet).
-			// Reset lastHash so the next loop iteration re-encodes the
-			// current frame instead of waiting for the screen to change.
+			// The current frame was dropped; reset lastHash so the next
+			// loop iteration re-encodes it instead of waiting for the
+			// screen to change.
 			lastHash = 0
 			continue
 		}
 
+		tWrite := time.Now()
 		for _, msg := range messages {
 			if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
 				return fmt.Errorf("write video: %w", err)
 			}
+			stBytes += len(msg)
+		}
+		stWrite += time.Since(tWrite)
+		stFrames++
+
+		if since := time.Since(stLast); since >= 5*time.Second && stCaptures > 0 {
+			extra := fmt.Sprintf(", q=%.0f", encoder.CurrentQuality())
+			// Capture runs every tick; encode/write only on frames that
+			// actually changed — average each over its own denominator or
+			// idle periods misreport capture as slow.
+			avgEncode, avgWrite := time.Duration(0), time.Duration(0)
+			if stFrames > 0 {
+				avgEncode = (stEncode / time.Duration(stFrames)).Round(time.Millisecond)
+				avgWrite = (stWrite / time.Duration(stFrames)).Round(time.Millisecond)
+			}
+			log.Printf("pipeline: %.1f fps sent (%.1f captured), avg capture %s, encode %s, write %s, %.0f KB/s%s",
+				float64(stFrames)/since.Seconds(),
+				float64(stCaptures)/since.Seconds(),
+				(stCapture / time.Duration(stCaptures)).Round(time.Millisecond),
+				avgEncode,
+				avgWrite,
+				float64(stBytes)/1024/since.Seconds(),
+				extra)
+			stCapture, stEncode, stWrite, stCaptures, stFrames, stBytes = 0, 0, 0, 0, 0, 0
+			stLast = time.Now()
 		}
 	}
 }

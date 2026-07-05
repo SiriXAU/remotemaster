@@ -11,7 +11,7 @@ with full mouse and keyboard control.
 Client EXE (Windows)  ──WebSocket──▶  Relay Server  ◀──WebSocket──  Agent Browser
   GDI screen capture                   (Go + WS)                      canvas viewer
   SendInput injection                  6-digit code routing           mouse/keyboard
-  native Win32 window                  bidirectional bridge           WebCodecs-ready
+  native Win32 window                  bidirectional bridge           dirty-region draw
 ```
 
 All traffic is relayed through a self-hosted server. There is no P2P and no NAT
@@ -41,8 +41,8 @@ to be controlled, open PowerShell and run:
 irm https://yourdomain.com/launch.ps1 | iex
 ```
 
-This downloads the latest signed-in-time client build and FFmpeg dependency to
-`%LOCALAPPDATA%\RemoteMaster`, writes a `server.txt` pointing back at your
+This downloads the latest client build (a single ~7 MB EXE, no dependencies)
+to `%LOCALAPPDATA%\RemoteMaster`, writes a `server.txt` pointing back at your
 relay, and launches the client. The home page of the relay shows this exact
 one-liner (pre-filled with its own origin) plus a "Download launch.ps1"
 fallback and a direct EXE link.
@@ -73,10 +73,12 @@ troubleshooting — see the [usage guide](docs/usage.md).
 3. **Agent connects** to `/ws/agent?code=XXXXXX`. The server validates the code,
    attaches the agent to the session, tells both sides, and starts a
    bidirectional byte bridge.
-4. **Streaming.** The client captures the primary screen (GDI `BitBlt`), skips
-   frames identical to the last one (FNV-1a hash of the full frame), and tries
-   FFmpeg-backed H.264 first. If FFmpeg or the selected encoder is unavailable,
-   it falls back to WebP frames. The browser decodes each frame to a `<canvas>`.
+4. **Streaming.** The client captures the primary screen (GDI `BitBlt`, with
+   the mouse cursor composited in), skips frames identical to the last one
+   (FNV-1a hash of the full frame), and streams dirty-region WebP: only the
+   changed rectangle is re-encoded, in parallel strips when large, with
+   quality adapting to hold the target frame rate (default 25 fps). The
+   browser decodes each frame to a `<canvas>`.
 5. **Input.** The agent's browser sends mouse/keyboard events as compact binary
    messages; the client injects them with the Win32 `SendInput` API.
 6. **Teardown.** When either side disconnects, the relay closes both connections
@@ -99,7 +101,7 @@ server/          Relay server (Go)
   agent/         Agent web UI (HTML/JS, embedded into the server binary)
 deploy/          Docker Compose, Dockerfile, optional nginx TLS config
 build/           Cross-compile scripts
-docs/            Protocol, deployment, security, and codec integration notes
+docs/            Protocol, deployment, security, and usage notes
 dist/            Build output (gitignored)
 ```
 
@@ -147,13 +149,8 @@ Video behavior is tunable via environment variables read at client startup:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `REMOTEMASTER_VIDEO_CODEC` | `auto` | `auto` tries H.264 then WebP; `h264` requests H.264 explicitly; `webp` skips FFmpeg entirely. |
-| `REMOTEMASTER_FFMPEG` | auto-detect | Path to `ffmpeg.exe` (default: next to the EXE, then `PATH`). |
-| `REMOTEMASTER_H264_ENCODER` | `h264_mf` (Windows) | FFmpeg encoder: `libx264`, `h264_nvenc`, `h264_qsv`, `h264_amf`, ... |
-| `REMOTEMASTER_VIDEO_BITRATE_KBPS` | auto (min 6000) | Target bitrate, clamped to 500–100000. |
-| `REMOTEMASTER_VIDEO_CODEC_STRING` | `avc1.42E01F` | WebCodecs codec string sent to the viewer. |
-| `REMOTEMASTER_FPS` | `15` | Capture frame rate (1–60). |
-| `REMOTEMASTER_QUALITY` | `65` | WebP fallback quality (1–100). |
+| `REMOTEMASTER_FPS` | `25` | Capture frame rate (1–60). |
+| `REMOTEMASTER_QUALITY` | `65` | WebP quality cap (1–100); adapts down under load. |
 
 See the [usage guide](docs/usage.md) for recipes and troubleshooting.
 
@@ -181,15 +178,13 @@ encrypted if you terminate TLS in front of the relay. Read
 - [`docs/protocol.md`](docs/protocol.md) — WebSocket wire protocol reference.
 - [`docs/deployment.md`](docs/deployment.md) — production deployment with TLS.
 - [`docs/security.md`](docs/security.md) — threat model and hardening notes.
-- [`docs/h264-streaming.md`](docs/h264-streaming.md) — H.264 streaming path.
 - [`docs/design/`](docs/design/README.md) — implementation designs and the
   agent-ready task index for unbuilt roadmap features.
 - [`ROADMAP.md`](ROADMAP.md) — planned features and improvements.
 
 ## Roadmap highlights
 
-The viewer and wire protocol now carry a WebCodecs-ready H.264 path with WebP
-fallback. Next streaming work includes DXGI capture, tighter hardware encoder
-integration, multi-monitor capture, and adaptive bitrate. Other planned work
-includes file transfer, an explicit client consent prompt, and macOS/Linux
-clients. See [`ROADMAP.md`](ROADMAP.md).
+Streaming is dirty-region WebP with adaptive quality. Next streaming work
+includes DXGI capture (the biggest remaining latency win) and multi-monitor
+capture. Other planned work includes file transfer, an explicit client
+consent prompt, and macOS/Linux clients. See [`ROADMAP.md`](ROADMAP.md).

@@ -25,6 +25,10 @@ var (
 	procDeleteDC            = modGDI32.NewProc("DeleteDC")
 	procDeleteObject        = modGDI32.NewProc("DeleteObject")
 	procGetDIBits           = modGDI32.NewProc("GetDIBits")
+	procGetCursorInfo       = modUser32.NewProc("GetCursorInfo")
+	procGetIconInfo         = modUser32.NewProc("GetIconInfo")
+	procDrawIconEx          = modUser32.NewProc("DrawIconEx")
+	procLoadCursor          = modUser32.NewProc("LoadCursorW")
 )
 
 const (
@@ -34,7 +38,31 @@ const (
 	captureBlt    = 0x40000000
 	dibRgbBitmaps = 0
 	biRgb         = 0
+
+	cursorShowing    = 0x0001
+	cursorSuppressed = 0x0002
+	diNormal         = 0x0003
+	idcArrow         = 32512
 )
+
+type point struct {
+	X, Y int32
+}
+
+type cursorInfo struct {
+	CbSize      uint32
+	Flags       uint32
+	HCursor     uintptr
+	PtScreenPos point
+}
+
+type iconInfo struct {
+	FIcon    int32
+	XHotspot uint32
+	YHotspot uint32
+	HbmMask  uintptr
+	HbmColor uintptr
+}
 
 type bitmapInfoHeader struct {
 	BiSize          uint32
@@ -174,6 +202,11 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 		return nil, fmt.Errorf("BitBlt failed")
 	}
 
+	// BitBlt does not include the mouse cursor; composite it onto the frame so
+	// the viewer can see where the pointer is. Best effort — a failure here
+	// still yields a usable (cursor-less) frame.
+	c.drawCursor()
+
 	bih := bitmapInfoHeader{
 		BiSize:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
 		BiWidth:       int32(c.w),
@@ -208,4 +241,53 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 		*(*uint32)(unsafe.Pointer(&dst[i])) = rgba
 	}
 	return c.img, nil
+}
+
+// drawCursor composites the current mouse cursor into the memory DC at its
+// on-screen position, hotspot-adjusted. The caller must hold c.mu.
+func (c *GDICapturer) drawCursor() {
+	var ci cursorInfo
+	ci.CbSize = uint32(unsafe.Sizeof(ci))
+	if ret, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); ret == 0 {
+		return
+	}
+	// Draw for both CURSOR_SHOWING and CURSOR_SUPPRESSED: VMs with mouse
+	// integration (and pen/touch input) suppress the local cursor while its
+	// position stays valid — the remote viewer still needs to see it. Only
+	// a fully hidden cursor (flags == 0, e.g. video players) is skipped.
+	if ci.Flags&(cursorShowing|cursorSuppressed) == 0 {
+		return
+	}
+	cursor := ci.HCursor
+	if cursor == 0 {
+		// Suppressed with no handle — fall back to the standard arrow so
+		// the pointer position remains visible remotely.
+		cursor, _, _ = procLoadCursor.Call(0, idcArrow)
+		if cursor == 0 {
+			return
+		}
+	}
+
+	var hotX, hotY int32
+	var ii iconInfo
+	if ret, _, _ := procGetIconInfo.Call(cursor, uintptr(unsafe.Pointer(&ii))); ret != 0 {
+		hotX, hotY = int32(ii.XHotspot), int32(ii.YHotspot)
+		// GetIconInfo hands out copies of the cursor bitmaps; free them or
+		// they leak once per frame.
+		if ii.HbmMask != 0 {
+			procDeleteObject.Call(ii.HbmMask)
+		}
+		if ii.HbmColor != 0 {
+			procDeleteObject.Call(ii.HbmColor)
+		}
+	}
+
+	procDrawIconEx.Call(
+		c.memDC,
+		uintptr(ci.PtScreenPos.X-hotX),
+		uintptr(ci.PtScreenPos.Y-hotY),
+		cursor,
+		0, 0, 0, 0,
+		diNormal,
+	)
 }

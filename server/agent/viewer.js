@@ -1,8 +1,7 @@
 (function () {
   const MSG_WEBP_FRAME = 0x01;
-  const MSG_VIDEO_CONFIG = 0x08;
-  const MSG_VIDEO_CHUNK = 0x09;
   const MSG_CLIPBOARD = 0x0a;
+  const MSG_WEBP_REGION = 0x0c;
   const MAX_CLIPBOARD_BYTES = 256 * 1024;
 
   const params = new URLSearchParams(window.location.search);
@@ -33,17 +32,10 @@
   let reconnectDelay = 1000;
   let dead = false;
 
-  let pendingImageFrame = null;
+  let imageQueue = [];
+  let discardRegionsUntilFull = false;
   let imageDecoding = false;
-  let videoDecoder = null;
-  let videoConfigured = false;
-  let videoWaitingForKey = true;
-  let activeVideoCodec = '';
-  // Cache of the most recent 0x08 video-config message, keyed to the decoded
-  // VideoDecoderConfig + codec family. Used to transparently rebuild the
-  // decoder after a runtime error, since the server only sends 0x08 once per
-  // connection and never re-sends it on its own.
-  let lastVideoConfig = null;
+  let notice = '';
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -69,29 +61,12 @@
   }
 
   function markFrameDrawn() {
-    setStatus('connected', 'Connected');
-    hideOverlay();
-  }
-
-  // Closes the current decoder, if any, tolerating decoders that are already
-  // in the 'closed' state (e.g. the WebCodecs spec auto-closes a decoder
-  // right before firing its error callback, so close() there would throw).
-  function closeVideoDecoder() {
-    if (!videoDecoder) return;
-    try {
-      if (videoDecoder.state !== 'closed') videoDecoder.close();
-    } catch (err) {
-      // Already closed or closing; nothing to do.
+    if (notice) {
+      setStatus('waiting', notice);
+    } else {
+      setStatus('connected', 'Connected');
     }
-    videoDecoder = null;
-  }
-
-  function codecFamily(codec) {
-    const lower = codec.toLowerCase();
-    if (lower.startsWith('avc1.') || lower.startsWith('avc3.')) return 'H.264';
-    if (lower.startsWith('hvc1.') || lower.startsWith('hev1.')) return 'HEVC';
-    if (lower.startsWith('av01.')) return 'AV1';
-    return '';
+    hideOverlay();
   }
 
   function scaleCanvas() {
@@ -131,11 +106,8 @@
       case MSG_WEBP_FRAME:
         enqueueImageFrame(buffer);
         break;
-      case MSG_VIDEO_CONFIG:
-        configureVideo(buffer);
-        break;
-      case MSG_VIDEO_CHUNK:
-        decodeVideoChunk(buffer);
+      case MSG_WEBP_REGION:
+        enqueueRegionFrame(buffer);
         break;
       case MSG_CLIPBOARD:
         receiveClipboard(buffer);
@@ -185,31 +157,68 @@
   function enqueueImageFrame(buffer) {
     if (buffer.byteLength < 9) return;
     const dv = new DataView(buffer);
-    pendingImageFrame = {
+    // A full frame supersedes everything queued before it — dropping stale
+    // full frames and any older region deltas is safe because the new frame
+    // repaints the entire canvas.
+    imageQueue.length = 0;
+    imageQueue.push({
+      full: true,
       w: dv.getUint32(1),
       h: dv.getUint32(5),
       data: buffer.slice(9),
-    };
+    });
+    discardRegionsUntilFull = false;
+    if (!imageDecoding) decodeNextImageFrame();
+  }
+
+  function enqueueRegionFrame(buffer) {
+    if (buffer.byteLength < 17) return;
+    // Region deltas cannot be dropped individually — each one patches the
+    // canvas, so skipping one leaves a stale rectangle until the client's
+    // next periodic full refresh. If decode falls impossibly far behind,
+    // drop the whole backlog and wait for that refresh instead.
+    if (discardRegionsUntilFull) return;
+    if (imageQueue.length > 120) {
+      imageQueue.length = 0;
+      discardRegionsUntilFull = true;
+      return;
+    }
+    const dv = new DataView(buffer);
+    imageQueue.push({
+      full: false,
+      x: dv.getUint32(1),
+      y: dv.getUint32(5),
+      w: dv.getUint32(9),
+      h: dv.getUint32(13),
+      data: buffer.slice(17),
+    });
     if (!imageDecoding) decodeNextImageFrame();
   }
 
   function decodeNextImageFrame() {
-    const frame = pendingImageFrame;
+    const frame = imageQueue.shift();
     if (!frame) return;
 
-    pendingImageFrame = null;
     imageDecoding = true;
+
+    const drawFrame = (source) => {
+      if (frame.full) {
+        setRemoteSize(frame.w, frame.h);
+        ctx.drawImage(source, 0, 0);
+      } else {
+        ctx.drawImage(source, frame.x, frame.y);
+      }
+      markFrameDrawn();
+      imageDecoding = false;
+      if (imageQueue.length) decodeNextImageFrame();
+    };
 
     const blob = new Blob([frame.data], { type: 'image/webp' });
     if (window.createImageBitmap) {
       createImageBitmap(blob)
         .then((bitmap) => {
-          setRemoteSize(frame.w, frame.h);
-          ctx.drawImage(bitmap, 0, 0);
+          drawFrame(bitmap);
           bitmap.close();
-          markFrameDrawn();
-          imageDecoding = false;
-          if (pendingImageFrame) decodeNextImageFrame();
         })
         .catch(onImageDecodeError);
       return;
@@ -219,11 +228,7 @@
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      setRemoteSize(frame.w, frame.h);
-      ctx.drawImage(img, 0, 0);
-      markFrameDrawn();
-      imageDecoding = false;
-      if (pendingImageFrame) decodeNextImageFrame();
+      drawFrame(img);
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -235,135 +240,7 @@
   function onImageDecodeError() {
     imageDecoding = false;
     setStatus('error', 'Frame decode error');
-    if (pendingImageFrame) decodeNextImageFrame();
-  }
-
-  function configureVideo(buffer) {
-    if (!('VideoDecoder' in window) || !('EncodedVideoChunk' in window)) {
-      setStatus('error', 'Video codec is not supported by this browser');
-      return;
-    }
-    if (buffer.byteLength < 12) return;
-
-    const dv = new DataView(buffer);
-    const codecLen = dv.getUint8(1);
-    const w = dv.getUint32(2);
-    const h = dv.getUint32(6);
-    const descLen = dv.getUint16(10);
-    const codecOffset = 12;
-    const descOffset = codecOffset + codecLen;
-    if (buffer.byteLength < descOffset + descLen) return;
-
-    const codec = textDecoder.decode(new Uint8Array(buffer, codecOffset, codecLen));
-    const family = codecFamily(codec);
-    if (!family) {
-      setStatus('error', 'Unsupported video codec');
-      return;
-    }
-    const config = {
-      codec,
-      codedWidth: w,
-      codedHeight: h,
-      optimizeForLatency: true,
-    };
-    if (descLen > 0) {
-      config.description = new Uint8Array(buffer, descOffset, descLen);
-    }
-
-    lastVideoConfig = { codec, config, family };
-    setRemoteSize(w, h);
-    buildVideoDecoder(codec, config, family);
-  }
-
-  // (Re)creates the VideoDecoder from a decoded config. Used both for the
-  // initial 0x08 config message and to recover from a decoder runtime error
-  // without waiting for the server to resend a config it only sends once.
-  function buildVideoDecoder(codec, config, family) {
-    closeVideoDecoder();
-    videoConfigured = false;
-    videoWaitingForKey = true;
-    activeVideoCodec = codec;
-
-    videoDecoder = new VideoDecoder({
-      output: (frame) => {
-        const w = frame.displayWidth || frame.codedWidth || remoteW;
-        const h = frame.displayHeight || frame.codedHeight || remoteH;
-        setRemoteSize(w, h);
-        ctx.drawImage(frame, 0, 0, remoteW, remoteH);
-        frame.close();
-        markFrameDrawn();
-      },
-      error: (err) => {
-        console.error('video decode error', err);
-        recoverVideoDecoder();
-      },
-    });
-
-    const supportCheck = VideoDecoder.isConfigSupported
-      ? VideoDecoder.isConfigSupported(config)
-      : Promise.resolve({ supported: true, config });
-    const decoder = videoDecoder;
-
-    supportCheck
-      .then((result) => {
-        if (videoDecoder !== decoder) return;
-        if (!result.supported) throw new Error(`unsupported ${family} config`);
-        decoder.configure(result.config);
-        videoConfigured = true;
-      })
-      .catch((err) => {
-        console.error('video config error', err);
-        if (videoDecoder === decoder) activeVideoCodec = '';
-        setStatus('error', `${family} config error`);
-      });
-  }
-
-  // Rebuilds the decoder from the cached config after a runtime decode
-  // error. The rebuilt decoder starts back in "waiting for keyframe" mode,
-  // so corrupted decoder state is discarded and playback resumes cleanly
-  // from the next IDR/keyframe chunk. If no config has ever been received,
-  // this leaves the (unrecoverable) error state exactly as before.
-  function recoverVideoDecoder() {
-    closeVideoDecoder();
-    videoConfigured = false;
-    videoWaitingForKey = true;
-    activeVideoCodec = '';
-
-    if (!lastVideoConfig) {
-      setStatus('error', 'Video decode error');
-      return;
-    }
-
-    setStatus('waiting', 'Recovering video decoder...');
-    buildVideoDecoder(lastVideoConfig.codec, lastVideoConfig.config, lastVideoConfig.family);
-  }
-
-  function decodeVideoChunk(buffer) {
-    if (!videoDecoder || !videoConfigured || buffer.byteLength < 14) return;
-
-    const dv = new DataView(buffer);
-    const flags = dv.getUint8(1);
-    const isKey = (flags & 0x01) !== 0;
-    const timestamp = Number(dv.getBigUint64(2));
-    const duration = dv.getUint32(10);
-
-    if (videoWaitingForKey && !isKey) return;
-    if (isKey) videoWaitingForKey = false;
-    if (!isKey && videoDecoder.decodeQueueSize > 2) return;
-
-    const chunk = {
-      type: isKey ? 'key' : 'delta',
-      timestamp,
-      data: new Uint8Array(buffer, 14),
-    };
-    if (duration > 0) chunk.duration = duration;
-
-    try {
-      videoDecoder.decode(new EncodedVideoChunk(chunk));
-    } catch (err) {
-      console.error('video chunk error', err);
-      recoverVideoDecoder();
-    }
+    if (imageQueue.length) decodeNextImageFrame();
   }
 
   function connect() {
@@ -372,6 +249,7 @@
     const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
     ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}${tokenParam}`);
     ws.binaryType = 'arraybuffer';
+    notice = '';
     setStatus('waiting', 'Connecting...');
     showOverlay('Connecting to session...');
 
@@ -392,6 +270,14 @@
       switch (m.type) {
         case 'joined':
           setStatus('waiting', 'Waiting for first frame...');
+          break;
+
+        case 'notice':
+          // Client-side warning (e.g. an elevated app has focus and Windows
+          // is dropping our input). Sticky: shown until cleared by an empty
+          // notice, surviving the per-frame "Connected" status refresh.
+          notice = m.msg || '';
+          setStatus(notice ? 'waiting' : 'connected', notice || 'Connected');
           break;
 
         case 'error':
@@ -415,10 +301,8 @@
     ws.onerror = () => setStatus('error', 'Connection error');
 
     ws.onclose = () => {
-      closeVideoDecoder();
-      videoConfigured = false;
-      videoWaitingForKey = true;
-      activeVideoCodec = '';
+      imageQueue.length = 0;
+      discardRegionsUntilFull = false;
 
       if (dead) return;
       setStatus('waiting', 'Reconnecting...');

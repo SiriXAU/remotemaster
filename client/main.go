@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -34,7 +35,10 @@ func resolveServerURL() string {
 	if exe, err := os.Executable(); err == nil {
 		data, err := os.ReadFile(filepath.Join(filepath.Dir(exe), "server.txt"))
 		if err == nil {
-			if url := strings.TrimSpace(string(data)); url != "" {
+			// Tolerate a UTF-8 BOM: Windows PowerShell 5.1 writes one with
+			// -Encoding UTF8, and it is not whitespace so TrimSpace keeps it.
+			text := strings.TrimPrefix(string(data), "\ufeff")
+			if url := strings.TrimSpace(text); url != "" {
 				return url
 			}
 		}
@@ -44,6 +48,19 @@ func resolveServerURL() string {
 
 func main() {
 	log.SetFlags(log.Ltime)
+
+	// The client is built with -H windowsgui, so stderr goes nowhere. Tee
+	// logs to client.log next to the EXE so encoder/connection problems can
+	// be diagnosed in the field. Truncated on every start to stay small.
+	if exe, err := os.Executable(); err == nil {
+		logPath := filepath.Join(filepath.Dir(exe), "client.log")
+		if f, err := os.Create(logPath); err == nil {
+			// The file must come first: MultiWriter stops at the first write
+			// error, and under -H windowsgui os.Stderr is an invalid handle
+			// whose writes always fail.
+			log.SetOutput(io.MultiWriter(f, os.Stderr))
+		}
+	}
 
 	serverURL := resolveServerURL()
 	log.Printf("relay server: %s", serverURL)
@@ -78,6 +95,7 @@ func main() {
 		},
 		func() {
 			log.Println("agent connected")
+			ui.SetStatus("Agent connected — your screen is being shared")
 		},
 		func() {
 			log.Println("agent disconnected")
@@ -86,6 +104,13 @@ func main() {
 	)
 	client.OnConnFail = func() {
 		ui.SetCode("NOCONN")
+	}
+	client.OnNotice = func(notice string) {
+		if notice == "" {
+			ui.SetStatus("Agent connected — your screen is being shared")
+			return
+		}
+		ui.SetStatus(notice)
 	}
 
 	if clip, err := clipboard.New(); err != nil {

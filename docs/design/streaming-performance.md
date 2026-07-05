@@ -1,7 +1,7 @@
 # Design: Streaming & Performance
 
 Covers the roadmap's *Streaming & performance* theme beyond the WebP baseline.
-H.264 encoding has its own document — [`../h264-streaming.md`](../h264-streaming.md);
+(The former H.264 encoding path was removed in favor of dirty-region WebP;
 this file designs the three items that pair with it: **DXGI Desktop
 Duplication capture**, **region/dirty-rect diffing**, and **adaptive
 bitrate/FPS**. Read the [design index](README.md) first for the task IDs,
