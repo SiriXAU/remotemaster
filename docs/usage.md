@@ -103,6 +103,17 @@ That's adaptive quality holding the frame rate; the picture sharpens as soon
 as motion stops. Raise `REMOTEMASTER_QUALITY` (or lower `REMOTEMASTER_FPS`)
 if you prefer crisper motion over smoothness.
 
+**Clicks and keys do nothing in a specific app (e.g. Task Manager), but the
+screen still updates.**
+That app is running elevated, and Windows silently blocks input from
+normal-privilege processes into elevated ones (UIPI). Both the client window
+and the viewer status line show a warning while an elevated app has focus.
+To control elevated apps, restart the client as administrator:
+
+```powershell
+Start-Process "$env:LOCALAPPDATA\RemoteMaster\remotemaster-client.exe" -Verb RunAs -WorkingDirectory "$env:LOCALAPPDATA\RemoteMaster"
+```
+
 **Everything is slow end-to-end.**
 The relay copies every byte between the two sides, so its bandwidth and
 latency matter. Host it near the participants and check

@@ -35,6 +35,7 @@
   let imageQueue = [];
   let discardRegionsUntilFull = false;
   let imageDecoding = false;
+  let notice = '';
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -60,7 +61,11 @@
   }
 
   function markFrameDrawn() {
-    setStatus('connected', 'Connected');
+    if (notice) {
+      setStatus('waiting', notice);
+    } else {
+      setStatus('connected', 'Connected');
+    }
     hideOverlay();
   }
 
@@ -244,6 +249,7 @@
     const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
     ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}${tokenParam}`);
     ws.binaryType = 'arraybuffer';
+    notice = '';
     setStatus('waiting', 'Connecting...');
     showOverlay('Connecting to session...');
 
@@ -264,6 +270,14 @@
       switch (m.type) {
         case 'joined':
           setStatus('waiting', 'Waiting for first frame...');
+          break;
+
+        case 'notice':
+          // Client-side warning (e.g. an elevated app has focus and Windows
+          // is dropping our input). Sticky: shown until cleared by an empty
+          // notice, surviving the per-frame "Connected" status refresh.
+          notice = m.msg || '';
+          setStatus(notice ? 'waiting' : 'connected', notice || 'Connected');
           break;
 
         case 'error':

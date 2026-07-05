@@ -50,6 +50,10 @@ type Client struct {
 	// as opposed to onDisconn which fires after a working session drops.
 	OnConnFail func()
 
+	// OnNotice surfaces session warnings on the client window (e.g. "the
+	// focused app is elevated; input is blocked"). Empty string clears it.
+	OnNotice func(string)
+
 	// Clip, when set, enables bidirectional text clipboard sync with the agent.
 	Clip clipboard.Clipboard
 
@@ -166,6 +170,7 @@ func (c *Client) connect(ctx context.Context) error {
 		captureErrCh <- c.captureLoop(connCtx, conn)
 	}()
 	go c.clipboardLoop(connCtx, conn)
+	go c.watchElevatedFocus(connCtx, conn)
 
 	select {
 	case <-ctx.Done():

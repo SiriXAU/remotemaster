@@ -105,6 +105,13 @@ func main() {
 	client.OnConnFail = func() {
 		ui.SetCode("NOCONN")
 	}
+	client.OnNotice = func(notice string) {
+		if notice == "" {
+			ui.SetStatus("Agent connected — your screen is being shared")
+			return
+		}
+		ui.SetStatus(notice)
+	}
 
 	if clip, err := clipboard.New(); err != nil {
 		log.Printf("clipboard sync unavailable: %v", err)
