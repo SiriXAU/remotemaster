@@ -39,6 +39,11 @@
   let videoConfigured = false;
   let videoWaitingForKey = true;
   let activeVideoCodec = '';
+  // Cache of the most recent 0x08 video-config message, keyed to the decoded
+  // VideoDecoderConfig + codec family. Used to transparently rebuild the
+  // decoder after a runtime error, since the server only sends 0x08 once per
+  // connection and never re-sends it on its own.
+  let lastVideoConfig = null;
 
   function setStatus(state, text) {
     statusDot.className = state;
@@ -66,6 +71,19 @@
   function markFrameDrawn() {
     setStatus('connected', 'Connected');
     hideOverlay();
+  }
+
+  // Closes the current decoder, if any, tolerating decoders that are already
+  // in the 'closed' state (e.g. the WebCodecs spec auto-closes a decoder
+  // right before firing its error callback, so close() there would throw).
+  function closeVideoDecoder() {
+    if (!videoDecoder) return;
+    try {
+      if (videoDecoder.state !== 'closed') videoDecoder.close();
+    } catch (err) {
+      // Already closed or closing; nothing to do.
+    }
+    videoDecoder = null;
   }
 
   function codecFamily(codec) {
@@ -252,14 +270,19 @@
       config.description = new Uint8Array(buffer, descOffset, descLen);
     }
 
-    if (videoDecoder) {
-      videoDecoder.close();
-      videoDecoder = null;
-    }
+    lastVideoConfig = { codec, config, family };
+    setRemoteSize(w, h);
+    buildVideoDecoder(codec, config, family);
+  }
+
+  // (Re)creates the VideoDecoder from a decoded config. Used both for the
+  // initial 0x08 config message and to recover from a decoder runtime error
+  // without waiting for the server to resend a config it only sends once.
+  function buildVideoDecoder(codec, config, family) {
+    closeVideoDecoder();
     videoConfigured = false;
     videoWaitingForKey = true;
     activeVideoCodec = codec;
-    setRemoteSize(w, h);
 
     videoDecoder = new VideoDecoder({
       output: (frame) => {
@@ -272,10 +295,7 @@
       },
       error: (err) => {
         console.error('video decode error', err);
-        videoConfigured = false;
-        videoWaitingForKey = true;
-        activeVideoCodec = '';
-        setStatus('error', 'Video decode error');
+        recoverVideoDecoder();
       },
     });
 
@@ -296,6 +316,26 @@
         if (videoDecoder === decoder) activeVideoCodec = '';
         setStatus('error', `${family} config error`);
       });
+  }
+
+  // Rebuilds the decoder from the cached config after a runtime decode
+  // error. The rebuilt decoder starts back in "waiting for keyframe" mode,
+  // so corrupted decoder state is discarded and playback resumes cleanly
+  // from the next IDR/keyframe chunk. If no config has ever been received,
+  // this leaves the (unrecoverable) error state exactly as before.
+  function recoverVideoDecoder() {
+    closeVideoDecoder();
+    videoConfigured = false;
+    videoWaitingForKey = true;
+    activeVideoCodec = '';
+
+    if (!lastVideoConfig) {
+      setStatus('error', 'Video decode error');
+      return;
+    }
+
+    setStatus('waiting', 'Recovering video decoder...');
+    buildVideoDecoder(lastVideoConfig.codec, lastVideoConfig.config, lastVideoConfig.family);
   }
 
   function decodeVideoChunk(buffer) {
@@ -322,8 +362,7 @@
       videoDecoder.decode(new EncodedVideoChunk(chunk));
     } catch (err) {
       console.error('video chunk error', err);
-      videoWaitingForKey = true;
-      setStatus('error', activeVideoCodec ? 'Video decode error' : 'Video codec error');
+      recoverVideoDecoder();
     }
   }
 
@@ -376,10 +415,7 @@
     ws.onerror = () => setStatus('error', 'Connection error');
 
     ws.onclose = () => {
-      if (videoDecoder) {
-        videoDecoder.close();
-        videoDecoder = null;
-      }
+      closeVideoDecoder();
       videoConfigured = false;
       videoWaitingForKey = true;
       activeVideoCodec = '';

@@ -25,13 +25,19 @@ type wireVideoEncoder interface {
 	Close() error
 }
 
+// packetWaitTimeout bounds how long Encode waits for ffmpeg to emit an
+// encoded packet for the frame just written before returning early.
+const packetWaitTimeout = 750 * time.Millisecond
+
 type webpVideoEncoder struct {
 	w, h    int
 	quality float32
 }
 
 func newWireVideoEncoder(w, h, fps int, quality float32) wireVideoEncoder {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("REMOTEMASTER_VIDEO_CODEC")))
+	rawMode := os.Getenv("REMOTEMASTER_VIDEO_CODEC")
+	mode := strings.ToLower(strings.TrimSpace(rawMode))
+	explicitH264 := mode == "h264" || mode == "ffmpeg-h264"
 	switch mode {
 	case "", "auto", "h264", "ffmpeg-h264":
 		encoder, err := newFFmpegH264Encoder(w, h, fps)
@@ -39,10 +45,18 @@ func newWireVideoEncoder(w, h, fps int, quality float32) wireVideoEncoder {
 			log.Printf("video encoder: h264 via ffmpeg")
 			return encoder
 		}
-		log.Printf("video encoder: h264 unavailable (%v); falling back to webp", err)
+		if explicitH264 {
+			log.Printf("video encoder: REMOTEMASTER_VIDEO_CODEC=%q was explicitly requested but ffmpeg h264 setup failed (%v); falling back to webp", rawMode, err)
+		} else {
+			log.Printf("video encoder: h264 unavailable (%v); falling back to webp", err)
+		}
+		// The fallback reason was already logged above with full context —
+		// avoid a second, generic "video encoder: webp" log for the same
+		// event.
+		return &webpVideoEncoder{w: w, h: h, quality: quality}
 	case "webp":
 	default:
-		log.Printf("video encoder: unsupported REMOTEMASTER_VIDEO_CODEC=%q; falling back to webp", os.Getenv("REMOTEMASTER_VIDEO_CODEC"))
+		log.Printf("video encoder: unsupported REMOTEMASTER_VIDEO_CODEC=%q; falling back to webp", rawMode)
 	}
 	return newWebPVideoEncoder(w, h, quality)
 }
@@ -73,16 +87,16 @@ type h264AccessUnit struct {
 }
 
 type ffmpegH264Encoder struct {
-	w, h      int
-	fps       int
-	codec     string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	packetCh  chan h264AccessUnit
-	errCh     chan error
-	sentCfg   bool
-	timestamp uint64
-	duration  uint32
+	w, h        int
+	codec       string
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	packetCh    chan h264AccessUnit
+	errCh       chan error
+	sentCfg     bool
+	timestamp   uint64
+	duration    uint32
+	packetTimer *time.Timer
 }
 
 func newFFmpegH264Encoder(w, h, fps int) (*ffmpegH264Encoder, error) {
@@ -103,9 +117,9 @@ func newFFmpegH264Encoder(w, h, fps int) (*ffmpegH264Encoder, error) {
 	if codec == "" {
 		codec = "avc1.42E01F"
 	}
-	if err := validateVideoCodecString(codec); err != nil {
-		return nil, err
-	}
+	// Codec-string validation happens once, at the wire-protocol boundary in
+	// encodeVideoConfig (proto.go), which the first Encode call will
+	// exercise before anything is written to the connection.
 	bitrateKbps := envClampedInt(
 		"REMOTEMASTER_VIDEO_BITRATE_KBPS",
 		defaultVideoBitrateKbps(w, h, fps),
@@ -133,13 +147,12 @@ func newFFmpegH264Encoder(w, h, fps int) (*ffmpegH264Encoder, error) {
 	enc := &ffmpegH264Encoder{
 		w:        w,
 		h:        h,
-		fps:      fps,
 		codec:    codec,
 		cmd:      cmd,
 		stdin:    stdin,
 		packetCh: make(chan h264AccessUnit, fps*2),
 		errCh:    make(chan error, 1),
-		duration: uint32(1000000 / maxInt(fps, 1)),
+		duration: uint32(1000000 / max(fps, 1)),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -171,11 +184,12 @@ func findFFmpeg() (string, error) {
 func defaultVideoBitrateKbps(w, h, fps int) int {
 	// High-quality remote desktop baseline: about 0.18 bits/pixel/frame, with a
 	// floor that keeps 720p/1080p text and UI detail crisp on fast links.
-	kbps := w * h * maxInt(fps, 1) * 18 / 100000
-	return maxInt(kbps, 6000)
+	kbps := w * h * max(fps, 1) * 18 / 100000
+	return max(kbps, 6000)
 }
 
 func ffmpegH264Args(w, h, fps int, encoderName string, bitrateKbps int) []string {
+	bitrate := fmt.Sprintf("%dk", bitrateKbps)
 	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
@@ -187,10 +201,10 @@ func ffmpegH264Args(w, h, fps int, encoderName string, bitrateKbps int) []string
 		"-an",
 		"-c:v", encoderName,
 		"-bf", "0",
-		"-g", strconv.Itoa(maxInt(fps*2, 1)),
-		"-b:v", fmt.Sprintf("%dk", bitrateKbps),
-		"-maxrate", fmt.Sprintf("%dk", bitrateKbps),
-		"-bufsize", fmt.Sprintf("%dk", bitrateKbps),
+		"-g", strconv.Itoa(max(fps*2, 1)),
+		"-b:v", bitrate,
+		"-maxrate", bitrate,
+		"-bufsize", bitrate,
 	}
 
 	if encoderName == "libx264" {
@@ -204,7 +218,12 @@ func ffmpegH264Args(w, h, fps int, encoderName string, bitrateKbps int) []string
 	}
 
 	args = append(args,
-		"-bsf:v", "h264_metadata=aud=insert",
+		// dump_extra=freq=keyframe injects extradata (SPS/PPS) before every
+		// keyframe regardless of encoder. libx264 already repeats headers via
+		// x264-params above, but the default Windows encoder (h264_mf) does
+		// not, so without this a mid-stream keyframe recovery (the 0x08
+		// config message carries no description) can fail to decode.
+		"-bsf:v", "h264_metadata=aud=insert,dump_extra=freq=keyframe",
 		"-f", "h264",
 		"pipe:1",
 	)
@@ -231,6 +250,21 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 		return nil, err
 	}
 
+	if e.packetTimer == nil {
+		e.packetTimer = time.NewTimer(packetWaitTimeout)
+	} else {
+		// Reuse the timer instead of allocating a new one per frame. Per the
+		// time.Timer docs, Reset must only be called on a stopped or expired
+		// timer with its channel drained.
+		if !e.packetTimer.Stop() {
+			select {
+			case <-e.packetTimer.C:
+			default:
+			}
+		}
+		e.packetTimer.Reset(packetWaitTimeout)
+	}
+
 	select {
 	case packet, ok := <-e.packetCh:
 		if !ok {
@@ -239,7 +273,7 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 		messages = append(messages, e.encodePacket(packet))
 	case err := <-e.errCh:
 		return nil, err
-	case <-time.After(750 * time.Millisecond):
+	case <-e.packetTimer.C:
 		return messages, nil
 	}
 
@@ -257,6 +291,9 @@ func (e *ffmpegH264Encoder) Encode(img image.Image) ([][]byte, error) {
 }
 
 func (e *ffmpegH264Encoder) Close() error {
+	if e.packetTimer != nil {
+		e.packetTimer.Stop()
+	}
 	if e.stdin != nil {
 		_ = e.stdin.Close()
 	}
@@ -316,6 +353,11 @@ func (e *ffmpegH264Encoder) readErrors(r io.Reader) {
 		default:
 		}
 	}
+	// The capture above only keeps the first 64KiB for the error message.
+	// If ffmpeg keeps writing to stderr beyond that, its pipe must still be
+	// drained or the process blocks writing to a full pipe, hanging the
+	// stream. Discard everything after the captured prefix.
+	_, _ = io.Copy(io.Discard, r)
 }
 
 func parseAnnexBAccessUnits(r io.Reader, out chan<- h264AccessUnit) error {
@@ -343,28 +385,49 @@ func parseAnnexBAccessUnits(r io.Reader, out chan<- h264AccessUnit) error {
 }
 
 type h264AnnexBParser struct {
-	out    chan<- h264AccessUnit
-	au     []byte
-	hasVCL bool
+	out      chan<- h264AccessUnit
+	au       []byte
+	hasVCL   bool
+	auHasIDR bool
+
+	// scanFrom is how far into buf the search for the next start code has
+	// already progressed with no match, so a subsequent call (e.g. after
+	// more bytes arrive from a large in-flight NAL) can resume the scan
+	// instead of rescanning already-checked bytes from offset 0. Without
+	// this, accumulating one large NAL across many small reads is O(N^2) in
+	// the NAL size.
+	scanFrom int
 }
 
 func (p *h264AnnexBParser) consumeCompleteNALs(buf []byte) []byte {
 	for {
 		first, firstLen := findAnnexBStartCode(buf, 0)
 		if first < 0 {
+			p.scanFrom = 0
 			return keepAnnexBTail(buf)
 		}
 		if first > 0 {
 			buf = buf[first:]
 			first = 0
+			p.scanFrom = 0
 		}
 
-		next, _ := findAnnexBStartCode(buf, first+firstLen)
+		from := first + firstLen
+		if p.scanFrom > from {
+			from = p.scanFrom
+		}
+		next, _ := findAnnexBStartCode(buf, from)
 		if next < 0 {
+			// Remember how far we've scanned. Back up by up to 3 bytes so a
+			// start code that straddles this read's boundary (only
+			// partially visible so far) is still found once more bytes
+			// arrive.
+			p.scanFrom = max(len(buf)-3, from)
 			return buf
 		}
 		p.consumeNAL(buf[:next])
 		buf = buf[next:]
+		p.scanFrom = 0
 	}
 }
 
@@ -387,6 +450,9 @@ func (p *h264AnnexBParser) consumeNAL(nal []byte) {
 	if nalType == 1 || nalType == 5 {
 		p.hasVCL = true
 	}
+	if nalType == 5 {
+		p.auHasIDR = true
+	}
 }
 
 func (p *h264AnnexBParser) flush() {
@@ -395,12 +461,17 @@ func (p *h264AnnexBParser) flush() {
 	}
 	if !p.hasVCL {
 		p.au = p.au[:0]
+		p.auHasIDR = false
 		return
 	}
+	// The copy below is required: p.au's backing array is reused for the
+	// next access unit right after this send, but out is a channel to
+	// another goroutine, so the sent data must be independently owned.
 	data := append([]byte(nil), p.au...)
-	p.out <- h264AccessUnit{data: data, keyFrame: h264AccessUnitHasIDR(data)}
+	p.out <- h264AccessUnit{data: data, keyFrame: p.auHasIDR}
 	p.au = p.au[:0]
 	p.hasVCL = false
+	p.auHasIDR = false
 }
 
 func h264AccessUnitHasIDR(data []byte) bool {
@@ -418,7 +489,7 @@ func h264AccessUnitHasIDR(data []byte) bool {
 }
 
 func findAnnexBStartCode(data []byte, offset int) (int, int) {
-	for i := maxInt(offset, 0); i+3 <= len(data); i++ {
+	for i := max(offset, 0); i+3 <= len(data); i++ {
 		if i+4 <= len(data) && data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1 {
 			return i, 4
 		}
@@ -429,14 +500,15 @@ func findAnnexBStartCode(data []byte, offset int) (int, int) {
 	return -1, 0
 }
 
+// annexBStartCodeLen reports the length of the start code data begins with
+// (0, 3, or 4), reusing findAnnexBStartCode's byte-comparison logic instead
+// of duplicating it.
 func annexBStartCodeLen(data []byte) int {
-	if len(data) >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1 {
-		return 4
+	idx, length := findAnnexBStartCode(data, 0)
+	if idx != 0 {
+		return 0
 	}
-	if len(data) >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1 {
-		return 3
-	}
-	return 0
+	return length
 }
 
 func keepAnnexBTail(data []byte) []byte {
@@ -444,11 +516,4 @@ func keepAnnexBTail(data []byte) []byte {
 		return data
 	}
 	return data[len(data)-3:]
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

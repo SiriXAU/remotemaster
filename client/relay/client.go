@@ -327,7 +327,7 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 	frameHasher := fnv.New64a()
 	var lastHash uint64
 	encoder := newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
-	defer encoder.Close()
+	defer func() { _ = encoder.Close() }()
 
 	for {
 		select {
@@ -363,6 +363,17 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 			lastHash = h
 		}
 
+		// The display resolution can change mid-session (e.g. a monitor
+		// reconfiguration). The encoder's dimensions are frozen at
+		// construction, so a mismatch here would make every Encode call fail
+		// forever. Rebuild the encoder for the new size before encoding.
+		fw, fh := nrgba.Rect.Dx(), nrgba.Rect.Dy()
+		if fw != w || fh != h {
+			_ = encoder.Close()
+			w, h = fw, fh
+			encoder = newWireVideoEncoder(w, h, c.targetFPS, c.frameQuality)
+		}
+
 		messages, err := encoder.Encode(img)
 		if err != nil {
 			log.Printf("video encode: %v", err)
@@ -370,6 +381,11 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 				_ = encoder.Close()
 				encoder = newWebPVideoEncoder(w, h, c.frameQuality)
 			}
+			// The current frame was dropped (encode failed or the encoder
+			// was just swapped to a fallback that hasn't seen it yet).
+			// Reset lastHash so the next loop iteration re-encodes the
+			// current frame instead of waiting for the screen to change.
+			lastHash = 0
 			continue
 		}
 

@@ -130,17 +130,21 @@ $ffmpeg = Join-Path $dir 'ffmpeg.exe'
 Write-Host 'Downloading RemoteMaster client...'
 Invoke-WebRequest -Uri 'https://github.com/sirixau/remotemaster/releases/download/latest/remotemaster-client.exe' -OutFile $exe -UseBasicParsing
 if (-not (Test-Path $ffmpeg)) {
-  $zip = Join-Path $dir 'ffmpeg-release-essentials.zip'
-  $extract = Join-Path $dir 'ffmpeg-download'
-  if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
-  Write-Host 'Downloading FFmpeg dependency...'
-  Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
-  Expand-Archive -Path $zip -DestinationPath $extract -Force
-  $found = Get-ChildItem -Path $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
-  if ($null -eq $found) { throw 'ffmpeg.exe was not found in the downloaded FFmpeg package' }
-  Copy-Item -Path $found.FullName -Destination $ffmpeg -Force
-  Remove-Item -Force $zip
-  Remove-Item -Recurse -Force $extract
+  try {
+    $zip = Join-Path $dir 'ffmpeg-release-essentials.zip'
+    $extract = Join-Path $dir 'ffmpeg-download'
+    if (Test-Path $extract) { Remove-Item -Recurse -Force $extract }
+    Write-Host 'Downloading FFmpeg dependency...'
+    Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
+    Expand-Archive -Path $zip -DestinationPath $extract -Force
+    $found = Get-ChildItem -Path $extract -Filter 'ffmpeg.exe' -Recurse | Select-Object -First 1
+    if ($null -eq $found) { throw 'ffmpeg.exe was not found in the downloaded FFmpeg package' }
+    Copy-Item -Path $found.FullName -Destination $ffmpeg -Force
+    Remove-Item -Force $zip -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+  } catch {
+    Write-Warning "FFmpeg download failed; continuing without H.264 (WebP fallback): $($_.Exception.Message)"
+  }
 }
 '%s' | Set-Content -Path (Join-Path $dir 'server.txt') -NoNewline -Encoding UTF8
 Write-Host 'Starting RemoteMaster...'
