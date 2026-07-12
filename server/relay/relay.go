@@ -19,6 +19,11 @@ import (
 // (MAX_MESSAGE_BYTES); set before any bridge starts, not while serving.
 var MaxMessageBytes int64 = 10 * 1024 * 1024
 
+// copyBufferSize matches io.Copy's default staging buffer. Keeping that size
+// preserves the existing WebSocket fragmentation while limiting retained relay
+// scratch space to 64 KiB across the two pumps in an active session.
+const copyBufferSize = 32 * 1024
+
 // Bridge pumps messages bidirectionally between a session's client and agent.
 // It blocks until one side closes, then closes both connections.
 // onDone is called when the bridge shuts down.
@@ -46,6 +51,7 @@ func Bridge(ctx context.Context, sess *session.Session, onDone func()) {
 
 func pump(ctx context.Context, cancel context.CancelFunc, src, dst *websocket.Conn, label string, bytesCounter *atomic.Int64) {
 	defer cancel()
+	copyBuffer := make([]byte, copyBufferSize)
 	for {
 		mt, r, err := src.Reader(ctx)
 		if err != nil {
@@ -59,7 +65,7 @@ func pump(ctx context.Context, cancel context.CancelFunc, src, dst *websocket.Co
 			log.Printf("relay %s writer: %v", label, err)
 			return
 		}
-		n, err := io.Copy(w, r)
+		n, err := copyMessage(w, r, copyBuffer)
 		bytesCounter.Add(n)
 		if err != nil {
 			log.Printf("relay %s copy: %v", label, err)
@@ -72,4 +78,8 @@ func pump(ctx context.Context, cancel context.CancelFunc, src, dst *websocket.Co
 		}
 		metrics.MessagesRelayed.Add(1)
 	}
+}
+
+func copyMessage(dst io.Writer, src io.Reader, buffer []byte) (int64, error) {
+	return io.CopyBuffer(dst, src, buffer)
 }
