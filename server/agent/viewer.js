@@ -165,7 +165,8 @@
       full: true,
       w: dv.getUint32(1),
       h: dv.getUint32(5),
-      data: buffer.slice(9),
+      buffer,
+      payloadOffset: 9,
     });
     discardRegionsUntilFull = false;
     if (!imageDecoding) decodeNextImageFrame();
@@ -190,7 +191,8 @@
       y: dv.getUint32(5),
       w: dv.getUint32(9),
       h: dv.getUint32(13),
-      data: buffer.slice(17),
+      buffer,
+      payloadOffset: 17,
     });
     if (!imageDecoding) decodeNextImageFrame();
   }
@@ -213,7 +215,8 @@
       if (imageQueue.length) decodeNextImageFrame();
     };
 
-    const blob = new Blob([frame.data], { type: 'image/webp' });
+    const payload = new Uint8Array(frame.buffer, frame.payloadOffset);
+    const blob = new Blob([payload], { type: 'image/webp' });
     if (window.createImageBitmap) {
       createImageBitmap(blob)
         .then((bitmap) => {
