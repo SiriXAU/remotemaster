@@ -145,6 +145,8 @@
     if (!canvas) return;
 
     canvas.addEventListener('mousemove', (e) => {
+      // TODO(perf): Store only the latest client coordinates and convert them
+      // in flushMove so layout is read once per animation frame, not per event.
       pendingMove = getCanvasPos(canvas, e);
       if (!moveScheduled) {
         moveScheduled = true;
@@ -165,6 +167,8 @@
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      // TODO(perf): Accumulate wheel deltas and send once per animation frame;
+      // precision trackpads otherwise create bursts of tiny WebSocket messages.
       const { x, y } = getCanvasPos(canvas, e);
       sendBinary(encodeScroll(x, y, Math.round(e.deltaX / 40), Math.round(e.deltaY / 40)));
     }, { passive: false });

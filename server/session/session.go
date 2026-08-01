@@ -93,6 +93,8 @@ func (s *Store) Join(code string, agent *websocket.Conn) (*Session, bool) {
 
 // Counts returns a snapshot of how many sessions are waiting for an agent
 // (pending) and how many have one attached (active).
+// TODO(scale): Maintain pending and active counters on mutations so metrics
+// reads remain O(1) and do not scan the session map while holding RLock.
 func (s *Store) Counts() (pending, active int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -162,6 +164,9 @@ func (s *Store) expireLoop() {
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
 	for range t.C {
+		// TODO(scale): Close expired connections through a bounded worker pool;
+		// synchronous WebSocket close handshakes can stall this sole loop for
+		// seconds per connection.
 		for _, sess := range s.expireOnce(time.Now()) {
 			if sess.ClientConn != nil {
 				sess.ClientConn.Close(websocket.StatusNormalClosure, "session expired")
@@ -179,6 +184,8 @@ func (s *Store) expireOnce(now time.Time) []*Session {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// TODO(scale): Index sessions by expiry deadline (for example, a heap or
+	// timing wheel) so a sweep need not scan the full map under the write lock.
 	for code, sess := range s.sessions {
 		ttl := s.pendingTTL
 		start := sess.CreatedAt

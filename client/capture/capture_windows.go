@@ -103,15 +103,18 @@ type GDICapturer struct {
 
 // New returns a new GDICapturer. Call Close when done.
 func New() (*GDICapturer, error) {
-	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
-	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	if w == 0 || h == 0 {
-		return nil, fmt.Errorf("could not query screen metrics")
+	w, h, err := screenDimensions()
+	if err != nil {
+		return nil, err
 	}
-	return &GDICapturer{w: int(w), h: int(h)}, nil
+	return &GDICapturer{w: w, h: h}, nil
 }
 
-func (c *GDICapturer) Bounds() (int, int) { return c.w, c.h }
+func (c *GDICapturer) Bounds() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.w, c.h
+}
 
 // Close releases the cached GDI resources. Safe to call more than once.
 func (c *GDICapturer) Close() {
@@ -129,10 +132,12 @@ func (c *GDICapturer) release() {
 		if c.oldObj != 0 {
 			procSelectObject.Call(c.memDC, c.oldObj)
 		}
-		procDeleteDC.Call(c.memDC)
 	}
 	if c.bmp != 0 {
 		procDeleteObject.Call(c.bmp)
+	}
+	if c.memDC != 0 {
+		procDeleteDC.Call(c.memDC)
 	}
 	if c.screenDC != 0 {
 		procReleaseDC.Call(0, c.screenDC)
@@ -140,6 +145,35 @@ func (c *GDICapturer) release() {
 	c.screenDC, c.memDC, c.bmp, c.oldObj = 0, 0, 0, 0
 	c.pixels, c.img = nil, nil
 	c.initialized = false
+}
+
+// screenDimensions returns the current dimensions of the primary display.
+func screenDimensions() (int, int, error) {
+	w, _, _ := procGetSystemMetrics.Call(smCxScreen)
+	h, _, _ := procGetSystemMetrics.Call(smCyScreen)
+	if w == 0 || h == 0 {
+		return 0, 0, fmt.Errorf("could not query screen metrics")
+	}
+	return int(w), int(h), nil
+}
+
+// refreshDimensions drops GDI resources whenever Windows reports a new primary
+// display size. The caller must hold c.mu.
+func (c *GDICapturer) refreshDimensions() error {
+	w, h, err := screenDimensions()
+	if err != nil {
+		return err
+	}
+	if w == c.w && h == c.h {
+		return nil
+	}
+
+	// Compatible bitmaps are fixed-size. Reusing one after a display mode
+	// change can truncate the capture or make BitBlt fail, so rebuild the
+	// entire DC/bitmap/buffer set at the new size.
+	c.release()
+	c.w, c.h = w, h
+	return nil
 }
 
 // ensure lazily creates the reusable GDI context, bitmap, and buffers. The
@@ -158,6 +192,9 @@ func (c *GDICapturer) ensure() error {
 		procReleaseDC.Call(0, screenDC)
 		return fmt.Errorf("CreateCompatibleDC failed")
 	}
+	// TODO(perf): Use a cached top-down 32-bit DIB section as the selected
+	// bitmap so BitBlt writes into mapped pixels directly, avoiding GetDIBits
+	// and the second full-frame buffer.
 	bmp, _, _ := procCreateCompatibleBmp.Call(screenDC, uintptr(c.w), uintptr(c.h))
 	if bmp == 0 {
 		procDeleteDC.Call(memDC)
@@ -185,6 +222,9 @@ func (c *GDICapturer) Capture() (image.Image, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if err := c.refreshDimensions(); err != nil {
+		return nil, err
+	}
 	if err := c.ensure(); err != nil {
 		return nil, err
 	}
@@ -270,6 +310,8 @@ func (c *GDICapturer) drawCursor() {
 
 	var hotX, hotY int32
 	var ii iconInfo
+	// TODO(perf): Cache the hotspot for the last HCURSOR and call GetIconInfo
+	// only when the handle changes; it creates disposable bitmap copies now.
 	if ret, _, _ := procGetIconInfo.Call(cursor, uintptr(unsafe.Pointer(&ii))); ret != 0 {
 		hotX, hotY = int32(ii.XHotspot), int32(ii.YHotspot)
 		// GetIconInfo hands out copies of the cursor bitmaps; free them or

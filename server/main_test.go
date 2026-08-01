@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"nhooyr.io/websocket"
+	"nhooyr.io/websocket/wsjson"
 )
 
 func TestIsSixDigitCode(t *testing.T) {
@@ -162,5 +167,76 @@ func TestAllowWebSocketOrigin(t *testing.T) {
 	req.Header.Set("Origin", "http://evil.example")
 	if allowWebSocketOrigin(req) {
 		t.Fatal("cross-host origin accepted")
+	}
+}
+
+func TestReadClientConsent(t *testing.T) {
+	serverConn := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept: %v", err)
+			return
+		}
+		serverConn <- conn
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.CloseNow()
+
+	conn := <-serverConn
+	defer conn.CloseNow()
+	if err := wsjson.Write(ctx, client, wireMsg{Type: "consent", Granted: boolPtr(true)}); err != nil {
+		t.Fatalf("write consent: %v", err)
+	}
+	granted, err := readClientConsent(ctx, conn)
+	if err != nil {
+		t.Fatalf("read consent: %v", err)
+	}
+	if !granted {
+		t.Fatal("granted consent read as denied")
+	}
+}
+
+func TestReadClientConsentRejectsOtherControlMessage(t *testing.T) {
+	serverConn := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err == nil {
+			serverConn <- conn
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.CloseNow()
+	conn := <-serverConn
+	defer conn.CloseNow()
+	if err := wsjson.Write(ctx, client, wireMsg{Type: "notice"}); err != nil {
+		t.Fatalf("write control message: %v", err)
+	}
+	if _, err := readClientConsent(ctx, conn); err == nil {
+		t.Fatal("non-consent control message accepted")
+	}
+}
+
+func TestConsentWireMessageRetainsDenial(t *testing.T) {
+	b, err := json.Marshal(wireMsg{Type: "consent", Granted: boolPtr(false)})
+	if err != nil {
+		t.Fatalf("marshal consent denial: %v", err)
+	}
+	if !strings.Contains(string(b), `"granted":false`) {
+		t.Fatalf("consent denial omitted granted result: %s", b)
 	}
 }

@@ -3,6 +3,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -44,6 +45,7 @@ var (
 	procSendMessage         = modUser32.NewProc("SendMessageW")
 	procMoveWindow          = modUser32.NewProc("MoveWindow")
 	procSetWindowPos        = modUser32.NewProc("SetWindowPos")
+	procMessageBoxTimeout   = modUser32.NewProc("MessageBoxTimeoutW")
 	procGetDpiForWindow     = modUser32.NewProc("GetDpiForWindow")
 	procAdjustWindowRectEx  = modUser32.NewProc("AdjustWindowRectEx")
 	procSystemParametersInf = modUser32.NewProc("SystemParametersInfoW")
@@ -52,30 +54,44 @@ var (
 )
 
 const (
-	wsVisible    = 0x10000000
-	wsCaption    = 0x00C00000
-	wsSysMenu    = 0x00080000
-	wsMinimize   = 0x00020000
-	swShow       = 5
-	wmDestroy    = 0x0002
-	wmPaint      = 0x000F
-	wmCommand    = 0x0111
-	wmClose      = 0x0010
-	wmSetFont    = 0x0030
-	wmEraseBkgnd = 0x0014
-	wmDpiChanged = 0x02E0
-	idcArrow     = 32512
-	transparent  = 1
-	dtCenter     = 0x00000001
-	dtSingleLine = 0x00000020
-	dtNoClip     = 0x00000100
-	btnID        = 101
-	wsChild      = 0x40000000
-	wsTabStop    = 0x00010000
-	bsFlat       = 0x00008000
-	spiGetWork   = 0x0030 // SPI_GETWORKAREA
-	swpNoZOrder  = 0x0004
-	swpNoActive  = 0x0010
+	wsVisible       = 0x10000000
+	wsCaption       = 0x00C00000
+	wsSysMenu       = 0x00080000
+	wsMinimize      = 0x00020000
+	swShow          = 5
+	swRestore       = 9
+	wmDestroy       = 0x0002
+	wmPaint         = 0x000F
+	wmCommand       = 0x0111
+	wmClose         = 0x0010
+	wmSetFont       = 0x0030
+	wmEraseBkgnd    = 0x0014
+	wmDpiChanged    = 0x02E0
+	wmSysCommand    = 0x0112
+	scMinimize      = 0xF020
+	wmApp           = 0x8000
+	wmConsentPrompt = wmApp + 1
+	idcArrow        = 32512
+	transparent     = 1
+	dtCenter        = 0x00000001
+	dtSingleLine    = 0x00000020
+	dtNoClip        = 0x00000100
+	btnID           = 101
+	wsChild         = 0x40000000
+	wsTabStop       = 0x00010000
+	bsFlat          = 0x00008000
+	spiGetWork      = 0x0030 // SPI_GETWORKAREA
+	swpNoZOrder     = 0x0004
+	swpNoActive     = 0x0010
+	swpNoMove       = 0x0002
+	swpNoSize       = 0x0001
+	hwndTopmost     = ^uintptr(0) // (HWND)-1
+	hwndNoTopmost   = ^uintptr(1) // (HWND)-2
+	mbYesNo         = 0x00000004
+	mbIconWarn      = 0x00000030
+	mbSetForeground = 0x00010000
+	mbTopmost       = 0x00040000
+	idYes           = 6
 
 	// windowStyle: fixed-size dialog look — caption, close, minimize.
 	windowStyle = wsCaption | wsSysMenu | wsMinimize
@@ -125,14 +141,21 @@ type paintStruct struct {
 	RgbReserved [32]byte
 }
 
+type consentRequest struct {
+	agentIP string
+	granted bool
+}
+
 var (
-	globalCode   string
-	globalStatus string
-	globalHwnd   uintptr
-	globalBtn    uintptr
-	globalBtnFnt uintptr
-	globalOnQuit func()
-	mu           sync.Mutex
+	globalCode          string
+	globalStatus        string
+	globalHwnd          uintptr
+	globalBtn           uintptr
+	globalBtnFnt        uintptr
+	globalOnQuit        func()
+	globalControlActive bool
+	globalAgentIP       string
+	mu                  sync.Mutex
 
 	bgColor     = colorRef(0x14, 0x17, 0x24) // dark navy
 	codeColor   = colorRef(0xf8, 0xfa, 0xfc) // near-white
@@ -181,6 +204,21 @@ func wndProc(hwnd, m, wParam, lParam uintptr) uintptr {
 		}
 		procDestroyWindow.Call(hwnd)
 		return 0
+	case wmSysCommand:
+		// Keep the active-control indicator visible. Ending the session still
+		// closes this window, but minimizing it cannot hide active control.
+		if wParam&0xFFF0 == scMinimize {
+			mu.Lock()
+			active := globalControlActive
+			mu.Unlock()
+			if active {
+				return 0
+			}
+		}
+	case wmConsentPrompt:
+		request := (*consentRequest)(unsafe.Pointer(lParam))
+		request.granted = showConsentPrompt(hwnd, request.agentIP)
+		return 0
 	case wmDpiChanged:
 		// Move to the system-suggested rect for the new monitor DPI and
 		// re-lay-out the button.
@@ -195,6 +233,9 @@ func wndProc(hwnd, m, wParam, lParam uintptr) uintptr {
 		procInvalidateRect.Call(hwnd, 0, 0)
 		return 0
 	case wmDestroy:
+		mu.Lock()
+		globalHwnd = 0
+		mu.Unlock()
 		procPostQuitMessage.Call(0)
 		return 0
 	}
@@ -229,18 +270,23 @@ func onPaint(hwnd uintptr) uintptr {
 	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), bg)
 	procDeleteObject.Call(bg)
 
-	// Accent bar at top
+	// Accent bar at top. Red is reserved for active remote control.
 	topBar := rect{rc.Left, rc.Top, rc.Right, rc.Top + scale(4, dpi)}
-	accent, _, _ := procCreateSolidBrush.Call(accentColor)
+	mu.Lock()
+	code := globalCode
+	status := globalStatus
+	controlActive := globalControlActive
+	agentIP := globalAgentIP
+	mu.Unlock()
+	barColor := accentColor
+	if controlActive {
+		barColor = errColor
+	}
+	accent, _, _ := procCreateSolidBrush.Call(barColor)
 	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&topBar)), accent)
 	procDeleteObject.Call(accent)
 
 	procSetBkMode.Call(hdc, transparent)
-
-	mu.Lock()
-	code := globalCode
-	status := globalStatus
-	mu.Unlock()
 
 	// State-dependent content.
 	display := code
@@ -271,6 +317,13 @@ func onPaint(hwnd uintptr) uintptr {
 	if status != "" {
 		hint = status
 		hintColor = okColor
+	}
+	if controlActive {
+		hint = "REMOTE CONTROL ACTIVE"
+		if agentIP != "" {
+			hint += " — " + agentIP
+		}
+		hintColor = errColor
 	}
 
 	margin := scale(24, dpi)
@@ -476,4 +529,62 @@ func SetStatus(status string) {
 	if globalHwnd != 0 {
 		procInvalidateRect.Call(globalHwnd, 0, 0)
 	}
+}
+
+// RequestConsent presents the local person with a topmost approval dialog.
+// Only an explicit Yes authorizes control; timeout, cancellation, and close
+// all deny it.
+func RequestConsent(ctx context.Context, agentIP string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	mu.Lock()
+	hwnd := globalHwnd
+	mu.Unlock()
+	if hwnd == 0 {
+		return false
+	}
+	request := consentRequest{agentIP: agentIP}
+	// The status window owns the UI thread. SendMessage synchronously runs the
+	// prompt in that thread and keeps the request alive until it has answered.
+	procSendMessage.Call(hwnd, wmConsentPrompt, 0, uintptr(unsafe.Pointer(&request)))
+	return request.granted && ctx.Err() == nil
+}
+
+func showConsentPrompt(hwnd uintptr, agentIP string) bool {
+	prompt := "A support agent wants to view and control this machine."
+	if agentIP != "" {
+		prompt += "\n\nAgent address: " + agentIP
+	}
+	prompt += "\n\nAllow remote control?"
+	title := mustUTF16("RemoteMaster — approval required")
+	text := mustUTF16(prompt)
+	// MessageBoxTimeoutW uses milliseconds and returns 0 on timeout.
+	r, _, _ := procMessageBoxTimeout.Call(hwnd,
+		uintptr(unsafe.Pointer(text)), uintptr(unsafe.Pointer(title)),
+		mbYesNo|mbIconWarn|mbSetForeground|mbTopmost, 0, 30000)
+	return r == idYes
+}
+
+// SetControlActive turns the status window into a persistent, topmost local
+// indicator for the entire consented remote-control session.
+func SetControlActive(active bool, agentIP string) {
+	mu.Lock()
+	globalControlActive = active
+	globalAgentIP = agentIP
+	hwnd := globalHwnd
+	mu.Unlock()
+	if hwnd == 0 {
+		return
+	}
+	insertAfter := hwndNoTopmost
+	if active {
+		insertAfter = hwndTopmost
+		// Restore a window minimized before consent: a taskbar-only signal is
+		// not a visible active-control indicator.
+		procShowWindow.Call(hwnd, swRestore)
+	}
+	procSetWindowPos.Call(hwnd, insertAfter, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoActive)
+	procInvalidateRect.Call(hwnd, 0, 0)
 }
