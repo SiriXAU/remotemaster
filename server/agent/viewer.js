@@ -29,8 +29,8 @@
 
   let remoteW = 0, remoteH = 0;
   let ws = null;
-  let reconnectDelay = 1000;
   let dead = false;
+  let controlEnabled = false;
 
   let imageQueue = [];
   let discardRegionsUntilFull = false;
@@ -93,7 +93,7 @@
       }
     },
     sendBinary: (buf) => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (controlEnabled && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(buf);
       }
     },
@@ -165,7 +165,8 @@
       full: true,
       w: dv.getUint32(1),
       h: dv.getUint32(5),
-      data: buffer.slice(9),
+      buffer,
+      payloadOffset: 9,
     });
     discardRegionsUntilFull = false;
     if (!imageDecoding) decodeNextImageFrame();
@@ -178,6 +179,8 @@
     // next periodic full refresh. If decode falls impossibly far behind,
     // drop the whole backlog and wait for that refresh instead.
     if (discardRegionsUntilFull) return;
+    // TODO(perf): Cap queued frames by compressed bytes and age so decode lag
+    // cannot retain an excessive memory or latency backlog.
     if (imageQueue.length > 120) {
       imageQueue.length = 0;
       discardRegionsUntilFull = true;
@@ -190,7 +193,8 @@
       y: dv.getUint32(5),
       w: dv.getUint32(9),
       h: dv.getUint32(13),
-      data: buffer.slice(17),
+      buffer,
+      payloadOffset: 17,
     });
     if (!imageDecoding) decodeNextImageFrame();
   }
@@ -213,7 +217,8 @@
       if (imageQueue.length) decodeNextImageFrame();
     };
 
-    const blob = new Blob([frame.data], { type: 'image/webp' });
+    const payload = new Uint8Array(frame.buffer, frame.payloadOffset);
+    const blob = new Blob([payload], { type: 'image/webp' });
     if (window.createImageBitmap) {
       createImageBitmap(blob)
         .then((bitmap) => {
@@ -249,12 +254,12 @@
     const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
     ws = new WebSocket(`${proto}://${location.host}/ws/agent?code=${code}${tokenParam}`);
     ws.binaryType = 'arraybuffer';
+    controlEnabled = false;
     notice = '';
     setStatus('waiting', 'Connecting...');
     showOverlay('Connecting to session...');
 
     ws.onopen = () => {
-      reconnectDelay = 1000;
       setStatus('waiting', 'Waiting for client...');
     };
 
@@ -269,7 +274,22 @@
 
       switch (m.type) {
         case 'joined':
-          setStatus('waiting', 'Waiting for first frame...');
+          setStatus('waiting', 'Waiting for the user to approve...');
+          showOverlay('Waiting for the user to approve this session...');
+          break;
+
+        case 'consent':
+          if (m.granted) {
+            controlEnabled = true;
+            setStatus('waiting', 'Waiting for first frame...');
+            showOverlay('Approval received. Waiting for the remote screen...');
+          } else {
+            dead = true;
+            controlEnabled = false;
+            setStatus('error', 'Session was not approved');
+            showOverlay('The remote user did not approve this session.');
+            ws.close();
+          }
           break;
 
         case 'notice':
@@ -282,6 +302,7 @@
 
         case 'error':
           dead = true;
+          controlEnabled = false;
           setStatus('error', m.msg || 'Error');
           showOverlay(m.msg || 'Session error');
           break;
@@ -291,6 +312,7 @@
           // The session is over; mark it dead so onclose does not reconnect
           // into a code the server has already removed.
           dead = true;
+          controlEnabled = false;
           setStatus('error', 'Session ended');
           showOverlay('The remote session has ended.');
           ws.close();
@@ -301,19 +323,23 @@
     ws.onerror = () => setStatus('error', 'Connection error');
 
     ws.onclose = () => {
+      controlEnabled = false;
       imageQueue.length = 0;
       discardRegionsUntilFull = false;
 
       if (dead) return;
-      setStatus('waiting', 'Reconnecting...');
-      showOverlay('Connection lost. Reconnecting...');
-      setTimeout(connect, reconnectDelay);
-      reconnectDelay = Math.min(reconnectDelay * 2, 16000);
+      // Session codes are single-use and the server removes a session when
+      // either endpoint disconnects. Retrying the same code cannot recover a
+      // bridge and used to misleadingly loop into "already claimed" errors.
+      dead = true;
+      setStatus('error', 'Connection lost');
+      showOverlay('Connection lost. This session cannot be reconnected; start a new session.');
     };
   }
 
   disconnectBtn.addEventListener('click', () => {
     dead = true;
+    controlEnabled = false;
     if (ws) ws.close();
     setStatus('error', 'Disconnected');
     showOverlay('Session disconnected.');

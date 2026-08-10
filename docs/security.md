@@ -8,9 +8,10 @@ against and what it deliberately does not.
 
 ## Trust model
 
-- The **client** trusts whoever is given the 6-digit code. There is currently no
-  in-client prompt to approve a specific agent — as soon as an agent joins,
-  control begins. An explicit consent prompt is on the [roadmap](../ROADMAP.md).
+- The **client** requires an explicit local approval before sharing
+  or accepting input, and shows a persistent topmost active-control indicator.
+  `REMOTEMASTER_AUTO_CONSENT=1` intentionally bypasses this for unattended
+  deployments and should be treated as a reduced-safety mode.
 - The **relay** is fully trusted: it sees every frame and keystroke in plaintext.
   End-to-end encryption between client and agent is not implemented; confidentiality
   depends on running your own relay and putting TLS in front of it.
@@ -20,9 +21,9 @@ against and what it deliberately does not.
 
 - **Brute-forcing the code space.** `/ws/agent` join attempts are rate-limited
   per client IP (`newAttemptLimiter(8, 1m, 5m)` in `server/main.go`): more than
-  8 *failed* joins in a minute blocks that IP for 5 minutes. Only failures count,
-  so a legitimate viewer reconnecting to its own live session is never locked
-  out. The 6-digit space is 900,000 codes; the limiter makes an online scan
+  8 *failed* joins in a minute blocks that IP for 5 minutes. Only failures count.
+  Session codes are single-use, so reconnecting a disconnected viewer is not
+  supported. The 6-digit space is 900,000 codes; the limiter makes an online scan
   impractical, but see "Known limitations" below.
 - **Code prediction.** Codes come from `crypto/rand`, not `math/rand`, and are
   allocated under a lock so two clients cannot be issued the same code.

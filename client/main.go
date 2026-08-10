@@ -105,6 +105,8 @@ func main() {
 	client.OnConnFail = func() {
 		ui.SetCode("NOCONN")
 	}
+	client.RequestConsent = ui.RequestConsent
+	client.OnControlActive = ui.SetControlActive
 	client.OnNotice = func(notice string) {
 		if notice == "" {
 			ui.SetStatus("Agent connected — your screen is being shared")

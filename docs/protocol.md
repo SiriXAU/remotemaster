@@ -26,19 +26,25 @@ All multi-byte binary fields are **big-endian**.
 
 ## JSON control messages
 
-Shape: `{ "type": string, "code"?: string, "msg"?: string }`.
+Shape: `{ "type": string, "code"?: string, "msg"?: string,
+"agent_ip"?: string, "granted"?: bool }`.
 
 | `type` | Direction | Meaning |
 | --- | --- | --- |
 | `registered` | server → client | Session created; `code` is the 6-digit code. |
 | `joined` | server → agent | Agent successfully attached to the session. |
-| `agent_connected` | server → client | An agent joined; start the capture loop. |
+| `agent_connected` | server → client | An agent joined; `agent_ip` identifies it. The client requests local consent before capture or input begins. |
+| `consent` | client → server | The local person approves (`granted: true`) or denies (`granted: false`) remote control within 30 seconds. |
+| `consent` | server → agent | The approval result. The bridge opens only after `granted: true`. |
 | `agent_disconnected` | server → either | The peer left; session ending. |
 | `disconnect` | server → either | Session torn down. |
 | `error` | server → agent | `msg` explains the failure (bad/claimed code, etc.). |
 
-The client starts capturing only after `agent_connected`, and the viewer drops
-back to a "waiting" state on `agent_disconnected`/`disconnect`.
+The client starts capturing and accepting input only after both
+`agent_connected` and a locally approved `consent` message. Until approval the
+server has not opened the bridge, so no frames or input can cross it. A denial,
+timeout, or later disconnect ends the single-use session; reconnecting with the
+same code is intentionally unsupported.
 
 ## Binary messages
 

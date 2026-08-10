@@ -2,6 +2,8 @@
 FROM golang:1.25-alpine AS builder
 WORKDIR /src
 
+# TODO(build): Copy module manifests and download dependencies in a cached layer
+# before source files so ordinary code edits do not invalidate module downloads.
 # Copy workspace and both modules
 COPY go.work go.work.sum* ./
 COPY server/ ./server/

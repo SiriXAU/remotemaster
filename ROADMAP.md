@@ -36,10 +36,9 @@ commitment, and priorities will shift with real usage.
 
 ## Security & trust
 
-- **Explicit client-side consent** — Prompt the user in the client window to
-  approve an incoming agent before control begins, and surface an always-visible
-  "someone is controlling this machine" indicator. See
-  [`docs/security.md`](docs/security.md).
+Explicit client-side consent and a topmost active-control indicator are shipped.
+Remaining security work:
+
 - **One-time / expiring codes and agent auth** — Optional pre-shared token or
   short-lived signed code so a leaked 6-digit code alone is not enough.
 - **End-to-end encryption** — Key exchange between client and agent so a
