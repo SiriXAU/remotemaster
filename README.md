@@ -56,8 +56,11 @@ EXE.
 1. The client window shows a 6-digit code (or `NOCONN` if it cannot reach the
    relay, `------` while idle).
 2. The agent opens `https://yourdomain.com` and enters the 6-digit code.
-3. The remote screen appears with full mouse and keyboard control. Either side
-   can end the session; the client also has an **End Session** button.
+3. The client asks the person being helped to approve the incoming agent. Only
+   after approval does the remote screen appear with mouse and keyboard control.
+   While control is active, the client window stays visible as a red, topmost
+   indicator. Either side can end the session; the client also has an
+   **End Session** button.
 
 For a fuller walkthrough — including video-quality tuning and
 troubleshooting — see the [usage guide](docs/usage.md).
@@ -71,17 +74,20 @@ troubleshooting — see the [usage guide](docs/usage.md).
    that quietly disappears is reaped instead of holding a code (10-minute
    pending TTL).
 3. **Agent connects** to `/ws/agent?code=XXXXXX`. The server validates the code,
-   attaches the agent to the session, tells both sides, and starts a
-   bidirectional byte bridge.
-4. **Streaming.** The client captures the primary screen (GDI `BitBlt`, with
+   attaches the agent to the session, and asks the client for local consent.
+4. **Consent.** The server opens the bidirectional byte bridge only after the
+   person at the client approves. Denial or a 30-second timeout ends the
+   single-use session. `REMOTEMASTER_AUTO_CONSENT=1` is an explicit reduced-
+   safety escape hatch for unattended deployments.
+5. **Streaming.** The client captures the primary screen (GDI `BitBlt`, with
    the mouse cursor composited in), skips frames identical to the last one
    (FNV-1a hash of the full frame), and streams dirty-region WebP: only the
    changed rectangle is re-encoded, in parallel strips when large, with
    quality adapting to hold the target frame rate (default 25 fps). The
    browser decodes each frame to a `<canvas>`.
-5. **Input.** The agent's browser sends mouse/keyboard events as compact binary
+6. **Input.** The agent's browser sends mouse/keyboard events as compact binary
    messages; the client injects them with the Win32 `SendInput` API.
-6. **Teardown.** When either side disconnects, the relay closes both connections
+7. **Teardown.** When either side disconnects, the relay closes both connections
    and frees the code. Active sessions also have an 8-hour hard TTL.
 
 The wire protocol (video + input message formats and JSON control messages) is
@@ -151,6 +157,7 @@ Video behavior is tunable via environment variables read at client startup:
 | --- | --- | --- |
 | `REMOTEMASTER_FPS` | `25` | Capture frame rate (1–60). |
 | `REMOTEMASTER_QUALITY` | `65` | WebP quality cap (1–100); adapts down under load. |
+| `REMOTEMASTER_AUTO_CONSENT` | unset | Set to `1` only to bypass local approval for unattended use. |
 
 See the [usage guide](docs/usage.md) for recipes and troubleshooting.
 
@@ -163,12 +170,13 @@ See the [usage guide](docs/usage.md) for recipes and troubleshooting.
 
 ## Security model
 
-Sessions are gated by a 6-digit code, so treat this as a "share a code with
-someone you trust for the length of a call" tool, not a hardened multi-tenant
-service. The relay adds brute-force protection (rate-limited join attempts),
-same-origin checks on WebSocket upgrades, host-header validation for the
-generated PowerShell script, CSPRNG codes, and session TTLs. Traffic is only
-encrypted if you terminate TLS in front of the relay. Read
+Sessions are gated by a 6-digit code plus explicit approval at the controlled
+machine, so treat this as a "share a code with someone you trust for the length
+of a call" tool, not a hardened multi-tenant service. The relay adds brute-force
+protection (rate-limited join attempts), same-origin checks on WebSocket
+upgrades, host-header validation for the generated PowerShell script, CSPRNG
+codes, and session TTLs. Traffic is only encrypted if you terminate TLS in
+front of the relay. Read
 [`docs/security.md`](docs/security.md) before exposing it to the internet.
 
 ## Documentation
@@ -184,7 +192,7 @@ encrypted if you terminate TLS in front of the relay. Read
 
 ## Roadmap highlights
 
-Streaming is dirty-region WebP with adaptive quality. Next streaming work
-includes DXGI capture (the biggest remaining latency win) and multi-monitor
-capture. Other planned work includes file transfer, an explicit client
-consent prompt, and macOS/Linux clients. See [`ROADMAP.md`](ROADMAP.md).
+Streaming is dirty-region WebP with adaptive quality, and incoming agents now
+require explicit local approval. Next streaming work includes DXGI capture (the
+biggest remaining latency win) and multi-monitor capture. Other planned work
+includes file transfer and macOS/Linux clients. See [`ROADMAP.md`](ROADMAP.md).

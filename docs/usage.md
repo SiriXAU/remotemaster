@@ -34,18 +34,22 @@ There are two people in every session:
    | `------` | Idle / waiting for a code from the relay. |
    | `NOCONN` | Can't reach the relay server — check your internet connection or the relay URL. |
 
-4. When the session starts, the agent sees your screen and can control your
-   mouse and keyboard. Click **End Session** in the client window at any time
-   to cut them off instantly.
+4. When the agent joins, approve or deny the **Allow remote control?** prompt.
+   Nothing is shared and no input is accepted until you explicitly allow it.
+   While control is active, the RemoteMaster window stays on top with a red
+   **REMOTE CONTROL ACTIVE** indicator. Click **End Session** at any time to
+   cut the connection off instantly.
 
 ## 2. For the support agent
 
 1. Open the relay in a browser: `https://yourdomain.com`.
 2. Enter the 6-digit code the user reads to you.
-3. The remote screen appears. Your mouse and keyboard input is forwarded while
+3. Wait for the person being helped to approve the connection. The remote screen
+   appears only after approval; mouse and keyboard input is then forwarded while
    the viewer tab has focus.
 4. Close the tab (or have the user click **End Session**) to end the session.
-   Codes are single-use; a new session needs a new code.
+   Codes are single-use, including after a connection loss; a new session needs
+   a new code.
 
 The status line under the viewer shows the connection state; "Connected"
 means frames are flowing.
@@ -76,6 +80,7 @@ $env:REMOTEMASTER_QUALITY = "50"
 | --- | --- | --- |
 | `REMOTEMASTER_FPS` | `25` | Capture/encode frame rate, clamped to 1–60. |
 | `REMOTEMASTER_QUALITY` | `65` | WebP quality cap (1–100). Quality adapts downward automatically (floor 30) during heavy motion to hold the frame rate. |
+| `REMOTEMASTER_AUTO_CONSENT` | unset | Set to `1` only for unattended kiosk/self-support setups. It bypasses the approval prompt and reduces the local safety protection. |
 
 ### Quick recipes
 

@@ -76,12 +76,11 @@ type WindowsInjector struct {
 }
 
 func NewInjector() (*WindowsInjector, error) {
-	w, _, _ := procGetSMX.Call(smCxScreen)
-	h, _, _ := procGetSMX.Call(smCyScreen)
-	if w == 0 || h == 0 {
-		return nil, fmt.Errorf("could not get primary screen size")
+	w, h, err := currentScreenDimensions()
+	if err != nil {
+		return nil, err
 	}
-	return &WindowsInjector{screenW: int(w), screenH: int(h)}, nil
+	return &WindowsInjector{screenW: w, screenH: h}, nil
 }
 
 func (inj *WindowsInjector) Inject(e Event) error {
@@ -122,13 +121,14 @@ func (inj *WindowsInjector) Inject(e Event) error {
 }
 
 func (inj *WindowsInjector) mouseEvent(x, y int, flags, data uint32) error {
-	// Scale x,y (in remote pixel coords) to absolute 0-65535 range.
-	x = clamp(x, 0, inj.screenW-1)
-	y = clamp(y, 0, inj.screenH-1)
-	denomX := max(inj.screenW-1, 1)
-	denomY := max(inj.screenH-1, 1)
-	absX := int32(x * 65535 / denomX)
-	absY := int32(y * 65535 / denomY)
+	// System metrics can change between frames when a monitor is connected,
+	// disconnected, or its resolution changes. Refresh before every mouse
+	// injection so browser coordinates from the newly sized frame map to the
+	// current desktop rather than the dimensions at client startup.
+	if err := inj.refreshScreenDimensions(); err != nil {
+		return err
+	}
+	absX, absY := scaleToAbsolute(x, y, inj.screenW, inj.screenH)
 
 	inp := inputUnion{
 		Type: inputMouse,
@@ -146,14 +146,22 @@ func (inj *WindowsInjector) mouseEvent(x, y int, flags, data uint32) error {
 	return nil
 }
 
-func clamp(v, min, max int) int {
-	if v < min {
-		return min
+func currentScreenDimensions() (int, int, error) {
+	w, _, _ := procGetSMX.Call(smCxScreen)
+	h, _, _ := procGetSMX.Call(smCyScreen)
+	if w == 0 || h == 0 {
+		return 0, 0, fmt.Errorf("could not get primary screen size")
 	}
-	if v > max {
-		return max
+	return int(w), int(h), nil
+}
+
+func (inj *WindowsInjector) refreshScreenDimensions() error {
+	w, h, err := currentScreenDimensions()
+	if err != nil {
+		return err
 	}
-	return v
+	inj.screenW, inj.screenH = w, h
+	return nil
 }
 
 // keyFlags adds KEYEVENTF_EXTENDEDKEY for keys in the extended range so

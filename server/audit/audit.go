@@ -35,6 +35,8 @@ const (
 	EventJoinRejected   = "join_rejected"
 	EventSessionEnded   = "session_ended"
 	EventClientLost     = "client_lost"
+	EventConsentGranted = "consent_granted"
+	EventConsentDenied  = "consent_denied"
 )
 
 var (
@@ -81,6 +83,8 @@ func Enabled() bool {
 // Log writes one record as a JSON line, stamping the time. No-op when
 // disabled, so call sites never need to guard.
 func Log(e Event) {
+	// TODO(perf): Feed a bounded single-writer queue and batch audit output so
+	// slow I/O does not hold the global mutex on request and relay goroutines.
 	mu.Lock()
 	defer mu.Unlock()
 	if out == nil {

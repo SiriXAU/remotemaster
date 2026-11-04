@@ -66,6 +66,9 @@ func newWebPVideoEncoder(w, h, fps int, quality float32) *webpVideoEncoder {
 }
 
 func (e *webpVideoEncoder) Encode(img image.Image) ([][]byte, error) {
+	// TODO(perf): Represent opaque capture and crop buffers as *image.RGBA;
+	// chai2010/webp converts each *image.NRGBA into a newly allocated RGBA
+	// image pixel by pixel before encoding.
 	nrgba, ok := img.(*image.NRGBA)
 	if !ok || nrgba.Stride != e.w*4 || nrgba.Rect.Dx() != e.w || nrgba.Rect.Dy() != e.h {
 		// Unknown layout — encode the whole image without diffing.
@@ -76,6 +79,9 @@ func (e *webpVideoEncoder) Encode(img image.Image) ([][]byte, error) {
 		return e.encodeFull(img, nrgba.Pix)
 	}
 
+	// TODO(perf): Coalesce dirty tiles into multiple disjoint patches instead
+	// of one union box, which over-encodes unchanged space between far-apart
+	// updates such as the cursor and a caret or clock.
 	x0, y0, x1, y1 := diffBounds(e.prev, nrgba.Pix, e.w, e.h)
 	if x0 > x1 {
 		return nil, nil // identical frames — nothing to send
@@ -124,6 +130,8 @@ func (e *webpVideoEncoder) Encode(img image.Image) ([][]byte, error) {
 		wg.Add(1)
 		go func(i, sy, sh int) {
 			defer wg.Done()
+			// TODO(perf): Encode a strided, read-only view of the captured pixels
+			// instead of allocating and row-copying a crop for every dirty strip.
 			crop := image.NewNRGBA(image.Rect(0, 0, rw, sh))
 			for y := 0; y < sh; y++ {
 				srcRow := (sy+y)*e.w*4 + x0*4

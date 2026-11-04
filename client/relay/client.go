@@ -9,6 +9,7 @@ import (
 	"image"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nhooyr.io/websocket"
@@ -33,10 +34,14 @@ const (
 
 // ctrlMsg is the JSON control message struct used during session setup.
 type ctrlMsg struct {
-	Type string `json:"type"`
-	Code string `json:"code,omitempty"`
-	Msg  string `json:"msg,omitempty"`
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+	Msg     string `json:"msg,omitempty"`
+	AgentIP string `json:"agent_ip,omitempty"`
+	Granted *bool  `json:"granted,omitempty"`
 }
+
+type agentConnected struct{ ip string }
 
 // Client manages the WebSocket relay connection and drives the capture loop.
 type Client struct {
@@ -54,15 +59,23 @@ type Client struct {
 	// focused app is elevated; input is blocked"). Empty string clears it.
 	OnNotice func(string)
 
+	// RequestConsent is called after an agent joins and before any screen or
+	// input data is exchanged. It receives a context that expires after 30 s.
+	// Nil means deny. REMOTEMASTER_AUTO_CONSENT=1 deliberately bypasses it.
+	RequestConsent func(context.Context, string) bool
+	// OnControlActive updates the persistent local control indicator.
+	OnControlActive func(active bool, agentIP string)
+
 	// Clip, when set, enables bidirectional text clipboard sync with the agent.
 	Clip clipboard.Clipboard
 
 	targetFPS    int
 	frameQuality float32
 
-	clipMu     sync.Mutex
-	clipPrimed bool
-	lastClip   string
+	clipMu        sync.Mutex
+	clipPrimed    bool
+	lastClip      string
+	controlActive atomic.Bool
 }
 
 func New(serverURL string, cap capture.Capturer, inj input.Injector,
@@ -143,29 +156,48 @@ func (c *Client) connect(ctx context.Context) error {
 	connCtx, connCancel := context.WithCancel(ctx)
 	defer connCancel()
 
-	agentCh := make(chan struct{}, 1)
+	agentCh := make(chan agentConnected, 1)
 	inputCh := make(chan input.Event, 64)
 	readErrCh := make(chan error, 1)
 
 	go c.readPump(connCtx, conn, agentCh, inputCh, readErrCh)
-	go c.injectLoop(connCtx, inputCh)
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-agentCh:
+	case agent := <-agentCh:
+		if !c.requestConsent(connCtx, agent.ip) {
+			writeCtx, cancel := context.WithTimeout(connCtx, 2*time.Second)
+			_ = conn.Write(writeCtx, websocket.MessageText, mustJSON(consentMessage(false)))
+			cancel()
+			return fmt.Errorf("remote control was not approved")
+		}
+		if err := conn.Write(connCtx, websocket.MessageText, mustJSON(consentMessage(true))); err != nil {
+			return fmt.Errorf("send consent: %w", err)
+		}
+		c.controlActive.Store(true)
+		if c.OnControlActive != nil {
+			c.OnControlActive(true, agent.ip)
+		}
 	case err := <-readErrCh:
 		if err == nil {
 			return fmt.Errorf("connection closed while waiting for agent")
 		}
 		return fmt.Errorf("read while waiting for agent: %w", err)
 	}
+	defer func() {
+		c.controlActive.Store(false)
+		if c.OnControlActive != nil {
+			c.OnControlActive(false, "")
+		}
+	}()
 
 	if c.onConnect != nil {
 		c.onConnect()
 	}
 
 	captureErrCh := make(chan error, 1)
+	go c.injectLoop(connCtx, inputCh)
 	go func() {
 		captureErrCh <- c.captureLoop(connCtx, conn)
 	}()
@@ -189,7 +221,7 @@ func (c *Client) connect(ctx context.Context) error {
 }
 
 // readPump handles both JSON control messages and binary input events.
-func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan<- struct{}, inputCh chan<- input.Event, errCh chan<- error) {
+func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh chan<- agentConnected, inputCh chan<- input.Event, errCh chan<- error) {
 	report := func(err error) {
 		if err != nil && ctx.Err() != nil {
 			err = ctx.Err()
@@ -217,9 +249,11 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 			if !ok {
 				continue
 			}
-			select {
-			case inputCh <- ev:
-			default:
+			if c.controlActive.Load() {
+				select {
+				case inputCh <- ev:
+				default:
+				}
 			}
 			continue
 		}
@@ -231,7 +265,7 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 		switch m.Type {
 		case "agent_connected":
 			select {
-			case agentCh <- struct{}{}:
+			case agentCh <- agentConnected{ip: m.AgentIP}:
 			default:
 			}
 		case "agent_disconnected", "disconnect":
@@ -242,6 +276,14 @@ func (c *Client) readPump(ctx context.Context, conn *websocket.Conn, agentCh cha
 			return
 		}
 	}
+}
+
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
 
 func (c *Client) injectLoop(ctx context.Context, ch chan input.Event) {
@@ -301,6 +343,8 @@ func (c *Client) clipboardLoop(ctx context.Context, conn *websocket.Conn) {
 	if c.Clip == nil {
 		return
 	}
+	// TODO(perf): Poll GetClipboardSequenceNumber and call GetText only after
+	// it changes; unchanged polls currently scan UTF-16 and allocate a string.
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -367,6 +411,9 @@ func (c *Client) captureLoop(ctx context.Context, conn *websocket.Conn) error {
 		// Hash the full raw frame before encoding. The previous sampled hash was
 		// fast, but could miss small cursor/caret/text changes that matter in a
 		// remote desktop session.
+		// TODO(perf): Make Encode/diffBounds the sole change detector and run
+		// IdleTick when it reports no update; hashing first duplicates a complete
+		// frame scan on every changed tick.
 		frameHasher.Reset()
 		pix := nrgba.Pix
 		if _, err := frameHasher.Write(pix); err != nil {

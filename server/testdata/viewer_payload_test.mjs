@@ -7,6 +7,8 @@ const viewerSource = await readFile(new URL('../agent/viewer.js', import.meta.ur
 
 function loadViewer() {
   const decoded = [];
+  const sent = [];
+  const timers = [];
   let socket;
 
   class FakeBlob {
@@ -54,7 +56,7 @@ function loadViewer() {
     }
 
     close() {}
-    send() {}
+    send(value) { sent.push(value); }
   }
 
   const location = {
@@ -94,11 +96,11 @@ function loadViewer() {
     location,
     navigator: {},
     setInterval() {},
-    setTimeout() {},
+    setTimeout(...args) { timers.push(args); },
     window,
   });
   vm.runInContext(viewerSource, context, { filename: 'viewer.js' });
-  return { decoded, socket };
+  return { decoded, elements, sent, socket, timers, viewer: window._viewer };
 }
 
 function fullFrame(payload) {
@@ -110,6 +112,27 @@ function fullFrame(payload) {
   new Uint8Array(buffer, 9).set(payload);
   return buffer;
 }
+
+test('a lost connection ends the single-use session instead of retrying its code', () => {
+  const { elements, socket, timers } = loadViewer();
+  socket.onclose();
+
+  assert.equal(timers.length, 0);
+  assert.equal(elements.get('statusText').textContent, 'Connection lost');
+  assert.match(elements.get('overlayMsg').textContent, /cannot be reconnected/);
+});
+
+test('binary control is disabled until the client grants consent', () => {
+  const { sent, socket, viewer } = loadViewer();
+  const input = Uint8Array.of(0x06, 0x00, 0x41).buffer;
+
+  viewer.sendBinary(input);
+  assert.equal(sent.length, 0);
+
+  socket.onmessage({ data: JSON.stringify({ type: 'consent', granted: true }) });
+  viewer.sendBinary(input);
+  assert.equal(sent.length, 1);
+});
 
 function regionFrame(payload) {
   const buffer = new ArrayBuffer(17 + payload.length);

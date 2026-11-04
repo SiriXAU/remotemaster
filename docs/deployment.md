@@ -73,10 +73,11 @@ app port directly.
 
 Set `AUDIT_LOG` to `stderr`, `stdout`, or a file path to record session
 lifecycle events as JSON lines: `session_created`, `agent_joined` (with how
-long the code waited), `join_rejected` (with reason: `rate_limited`,
-`bad_code_format`, `bad_token`, `unknown_or_claimed_code`), `session_ended`
-(with duration), and `client_lost`. Each record carries the peer IP (subject
-to the `TRUST_PROXY_HEADERS` rules above). Session *recording* is not
+long the code waited), `consent_granted`, `consent_denied`, `join_rejected`
+(with reason: `rate_limited`, `bad_code_format`, `bad_token`,
+`unknown_or_claimed_code`), `session_ended` (with duration), and `client_lost`.
+Each record carries the peer IP where available (subject to the
+`TRUST_PROXY_HEADERS` rules above). Session *recording* is not
 implemented — this is a who/when/how-long trail, not a what-happened one.
 
 ## Client distribution
@@ -124,6 +125,7 @@ Durations use Go syntax: `30s`, `10m`, `8h`.
 |------------------------|---------|-------|---------|
 | `REMOTEMASTER_FPS`     | `25`    | 1–60  | Capture/send frame rate |
 | `REMOTEMASTER_QUALITY` | `65`    | 1–100 | WebP quality cap; adapts down (floor 30) under load to hold the frame rate |
+| `REMOTEMASTER_AUTO_CONSENT` | unset | `0`/`1` | Set to `1` only to bypass local approval for unattended use |
 
 Set these in the environment the client is launched from (out-of-range
 values are clamped). Lower both on constrained links.

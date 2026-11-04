@@ -5,10 +5,11 @@ This directory holds the implementation designs for the remaining
 or AI) uses to pick one up and ship it. Each task is scoped to land as its own
 PR with tests, the way the first roadmap batch did.
 
-The already-shipped items (project hygiene, configurable limits, `/metrics`,
-`AGENT_TOKEN`, audit logging, clipboard sync, keyboard mapping, dirty-region
-WebP streaming, and adaptive WebP quality) are **not** listed here — see the
-git history and the user-facing docs.
+The already-shipped baseline includes project hygiene, configurable limits,
+`/metrics`, `AGENT_TOKEN`, audit logging, clipboard sync, keyboard mapping,
+dirty-region WebP streaming, adaptive WebP quality, and explicit client
+consent. Shipped task rows remain listed with a ✅ for history; see the git
+history and user-facing docs for their current behavior.
 
 ## How to pick up a task
 
@@ -43,9 +44,9 @@ Task IDs are stable; reference them in branches, commits, and PRs (e.g.
 | RM-STREAM-1 | DXGI Desktop Duplication capture | Streaming | L | — | [streaming-performance](streaming-performance.md#rm-stream-1--dxgi-desktop-duplication-capture) |
 | RM-STREAM-3 | Adaptive FPS / resolution | Streaming | M | — | [streaming-performance](streaming-performance.md#rm-stream-3--adaptive-fps--resolution) |
 | RM-CAP-1 | Multi-monitor support | Capabilities | M–L | — | [capabilities](capabilities.md#rm-cap-1--multi-monitor-support) |
-| RM-CAP-2 | File transfer | Capabilities | L | SEC-1 (consent, ideal) | [capabilities](capabilities.md#rm-cap-2--file-transfer) |
+| RM-CAP-2 | File transfer | Capabilities | L | SEC-1 ✅ | [capabilities](capabilities.md#rm-cap-2--file-transfer) |
 | RM-CAP-3 | Session chat / annotations | Capabilities | S–M | — | [capabilities](capabilities.md#rm-cap-3--session-chat--annotations) |
-| RM-SEC-1 | Client consent + control indicator | Security | M | — | [security-trust](security-trust.md#rm-sec-1--explicit-client-side-consent--control-indicator) |
+| RM-SEC-1 | ✅ Client consent + control indicator | Security | M | — | [security-trust](security-trust.md#rm-sec-1--explicit-client-side-consent--control-indicator) |
 | RM-SEC-2 | One-time / expiring signed codes | Security | M | — | [security-trust](security-trust.md#rm-sec-2--one-time--expiring-signed-codes) |
 | RM-SEC-3 | End-to-end encryption | Security | L | SEC-2 (PAKE), SEC-1 (SAS) | [security-trust](security-trust.md#rm-sec-3--end-to-end-encryption) |
 | RM-PLAT-1 | macOS client | Platform | L | — (main/ui refactor) | [platform-reach](platform-reach.md#rm-plat-1--macos-client) |
@@ -56,30 +57,28 @@ Task IDs are stable; reference them in branches, commits, and PRs (e.g.
 
 ### Status
 
-All tasks are **`todo`**. This table is the source of truth; a PR that lands a
-task should flip its row (add a ✅ and the PR number) so the next agent sees
-current state. Nothing here is claimed yet.
+All tasks without a ✅ are **`todo`**. This table is the source of truth; a PR
+that lands a task should flip its row (add a ✅ and the PR number) so the next
+agent sees current state.
 
 ## Suggested order
 
 Value-to-effort, respecting dependencies. Independent tracks can run in
 parallel (they touch different files):
 
-1. **RM-SEC-1 (consent + indicator)** — highest trust value, no deps, and it
-   unblocks safe file transfer.
-2. **RM-CAP-3 (chat)** — small, self-contained, useful; annotations as a
+1. **RM-CAP-3 (chat)** — small, self-contained, useful; annotations as a
    follow-up.
-3. **RM-STREAM-3 (adaptive FPS / resolution)** — pure-Go controller, big UX
+2. **RM-STREAM-3 (adaptive FPS / resolution)** — pure-Go controller, big UX
    win on bad links.
-4. **RM-SEC-2 (expiring codes)** — small crypto, sets up SEC-3.
-5. **RM-OPS-1 stage 1 (Backend interface refactor)** — safe refactor, no
+3. **RM-SEC-2 (expiring codes)** — small crypto, sets up SEC-3.
+4. **RM-OPS-1 stage 1 (Backend interface refactor)** — safe refactor, no
    behavior change, unlocks Redis later.
-6. **RM-CAP-1 (multi-monitor)** and **RM-PLAT-3 (signing)** — independent.
-7. **RM-STREAM-1 (DXGI)** — the big remaining streaming track.
-8. **RM-CAP-2 (file transfer)** — after SEC-1.
-9. **RM-PLAT-1/2 (macOS/Linux)** — parallel platform track; start with the
+5. **RM-CAP-1 (multi-monitor)** and **RM-PLAT-3 (signing)** — independent.
+6. **RM-STREAM-1 (DXGI)** — the big remaining streaming track.
+7. **RM-CAP-2 (file transfer)** — consent is now available for its approval UI.
+8. **RM-PLAT-1/2 (macOS/Linux)** — parallel platform track; start with the
     portable `main`/`ui` refactor called out in PLAT-1.
-10. **RM-SEC-3 (E2E)** — last of the security track; highest risk, reuses
+9. **RM-SEC-3 (E2E)** — last of the security track; highest risk, reuses
     SEC-1's out-of-band channel and SEC-2's shared secret.
 
 ## Binary protocol tag registry
@@ -121,7 +120,7 @@ endpoints that don't know them:
 |------|------|---------|
 | `monitors`, `select_monitor` | RM-CAP-1 | monitor list / switch |
 | `chat` | RM-CAP-3 | text chat both directions |
-| `consent` | RM-SEC-1 | client approval result |
+| `consent` | **shipped** RM-SEC-1 | client approval result |
 | `stat` | RM-STREAM-3 | viewer decode-queue / RTT feedback |
 | `e2e_hello` | RM-SEC-3 | key-exchange handshake |
 

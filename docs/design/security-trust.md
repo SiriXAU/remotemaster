@@ -1,9 +1,9 @@
 # Design: Security & Trust
 
-Covers the roadmap's *Security & trust* theme that is not yet built:
-**explicit client-side consent + control indicator**, **one-time / expiring
-signed codes**, and **end-to-end encryption**. (The optional pre-shared
-`AGENT_TOKEN` half of "agent auth" already shipped.) Read the
+Covers the roadmap's *Security & trust* theme. **Explicit client-side consent +
+control indicator** is now shipped; **one-time / expiring signed codes** and
+**end-to-end encryption** remain designs. (The optional pre-shared `AGENT_TOKEN`
+half of "agent auth" also shipped.) Read the
 [design index](README.md) first for task IDs and the pickup workflow, and
 [`../security.md`](../security.md) for the current threat model these items
 extend.
@@ -12,9 +12,12 @@ extend.
 
 ## RM-SEC-1 — Explicit client-side consent + control indicator
 
+**Status: shipped.** The material below records the implementation design and
+acceptance criteria.
+
 ### Goal
-Today control begins the instant an agent joins — the person at the client
-machine has no say and no persistent signal that they are being controlled.
+Before RM-SEC-1, control began the instant an agent joined — the person at the
+client machine had no say and no persistent signal that they were being controlled.
 Add (a) an approval prompt before control starts and (b) an always-visible
 "someone is controlling this machine" indicator while a session is active.
 This is the highest-value trust item and depends on nothing.

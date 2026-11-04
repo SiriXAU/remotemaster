@@ -47,10 +47,14 @@ var agentToken string
 var bg = context.Background()
 
 type wireMsg struct {
-	Type string `json:"type"`
-	Code string `json:"code,omitempty"`
-	Msg  string `json:"msg,omitempty"`
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+	Msg     string `json:"msg,omitempty"`
+	Granted *bool  `json:"granted,omitempty"`
+	AgentIP string `json:"agent_ip,omitempty"`
 }
+
+const consentTimeout = 30 * time.Second
 
 func main() {
 	addr := os.Getenv("SERVER_ADDR")
@@ -89,6 +93,8 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	// TODO(bandwidth): Add compression and content-derived validators/cache
+	// headers for embedded UI assets; embed.FS has no useful modification time.
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	mux.HandleFunc("/health", healthHandler)
 	mux.Handle("/metrics", metrics.Handler(func() (int, int) { return store.Counts() }))
@@ -191,6 +197,9 @@ func clientHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO(scale): Move pending probes to a shared scheduler with a bounded
+	// worker pool; one goroutine and ticker per unjoined session scales with
+	// abandoned registrations.
 	go monitorPendingClient(sess)
 
 	// The HTTP handler returns here. The WebSocket connection is hijacked and
@@ -209,7 +218,7 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 	// The rate limiter only counts *failed* join attempts (bad code format or an
 	// unknown/already-claimed code) — the signature of a brute-force scan of the
 	// code space. A successful join costs nothing, so a legitimate viewer that
-	// reconnects to its own session is never locked out.
+	// normal successful joins never consume the failure budget.
 	ip := clientIP(r)
 	if joinAttempts.Blocked(ip) {
 		metrics.JoinBlocked.Add(1)
@@ -274,8 +283,9 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 
 	sess.WaitPendingProbe()
 
-	// Notify the waiting client
-	if err := wsjson.Write(bg, sess.ClientConn, wireMsg{Type: "agent_connected"}); err != nil {
+	// Notify the waiting client, then wait for its explicit approval before
+	// allowing any frames or input through the bridge.
+	if err := wsjson.Write(bg, sess.ClientConn, wireMsg{Type: "agent_connected", AgentIP: ip}); err != nil {
 		store.Remove(code)
 		log.Printf("client notify failed code=%s: %v", code, err)
 		wsjson.Write(bg, conn, wireMsg{Type: "error", Msg: "client is no longer connected"})
@@ -283,6 +293,22 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 		sess.ClientConn.Close(websocket.StatusNormalClosure, "client gone")
 		return
 	}
+	granted, err := waitForClientConsent(sess.ClientConn)
+	if err != nil {
+		endUnapprovedSession(code, sess, conn, ip, "consent was not received")
+		log.Printf("client consent failed code=%s: %v", code, err)
+		return
+	}
+	if err := wsjson.Write(bg, conn, wireMsg{Type: "consent", Granted: boolPtr(granted)}); err != nil {
+		endUnapprovedSession(code, sess, conn, ip, "agent disconnected before consent")
+		log.Printf("agent consent notify failed code=%s: %v", code, err)
+		return
+	}
+	if !granted {
+		endUnapprovedSession(code, sess, conn, ip, "client denied consent")
+		return
+	}
+	audit.Log(audit.Event{Event: audit.EventConsentGranted, Code: code, IP: ip})
 
 	// Bridge both connections — blocks until one side disconnects.
 	// This keeps the agentHandler goroutine alive to own the agent conn.
@@ -294,6 +320,40 @@ func agentHandler(w http.ResponseWriter, r *http.Request) {
 			DurationSeconds: time.Since(sess.JoinedAt).Seconds(),
 		})
 	})
+}
+
+// waitForClientConsent accepts exactly one consent result before a bridge is
+// opened. Keeping this handshake on the server means a browser cannot inject
+// input, nor can either endpoint exchange screen data, before approval.
+func waitForClientConsent(conn *websocket.Conn) (bool, error) {
+	ctx, cancel := context.WithTimeout(bg, consentTimeout)
+	defer cancel()
+	return readClientConsent(ctx, conn)
+}
+
+func readClientConsent(ctx context.Context, conn *websocket.Conn) (bool, error) {
+	var msg wireMsg
+	if err := wsjson.Read(ctx, conn, &msg); err != nil {
+		return false, err
+	}
+	if msg.Type != "consent" || msg.Granted == nil {
+		if msg.Type == "consent" {
+			return false, fmt.Errorf("consent missing granted result")
+		}
+		return false, fmt.Errorf("expected consent, got %q", msg.Type)
+	}
+	return *msg.Granted, nil
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func endUnapprovedSession(code string, sess *session.Session, agent *websocket.Conn, agentIP, reason string) {
+	store.Remove(code)
+	audit.Log(audit.Event{Event: audit.EventConsentDenied, Code: code, IP: agentIP, Reason: reason})
+	wsjson.Write(bg, agent, wireMsg{Type: "disconnect", Msg: reason})
+	wsjson.Write(bg, sess.ClientConn, wireMsg{Type: "disconnect", Msg: reason})
+	agent.Close(websocket.StatusNormalClosure, reason)
+	sess.ClientConn.Close(websocket.StatusNormalClosure, reason)
 }
 
 func monitorPendingClient(sess *session.Session) {
